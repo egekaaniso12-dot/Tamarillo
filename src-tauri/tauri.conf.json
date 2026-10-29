@@ -47,6 +47,10 @@
       "binaries/ffmpeg",
       "binaries/ffprobe",
       "binaries/yt-dlp"
+    ],
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
     ]
   }
 }
