@@ -59,6 +59,34 @@ jobs:
           Get-ChildItem $bin,$dllDir -File | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize
       - run: npm ci
       - run: npm run tauri:build
+      - name: Install and smoke-test bundled tools
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem 'src-tauri/target/release/bundle/nsis' -Filter '*setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS kurulum dosyası bulunamadı' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'TamarilloSmoke'
+          Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$installDir") -Wait
+          $required = @('Tamarillo.exe', 'ffmpeg.exe', 'ffprobe.exe', 'yt-dlp.exe', 'whisper-cli.exe')
+          $missing = $required | Where-Object { -not (Test-Path (Join-Path $installDir $_)) }
+          if ($missing) { throw "Kurulum paketinde eksik dosyalar: $($missing -join ', ')" }
+          $ffmpeg = Join-Path $installDir 'ffmpeg.exe'
+          $ffprobe = Join-Path $installDir 'ffprobe.exe'
+          $ytDlp = Join-Path $installDir 'yt-dlp.exe'
+          $whisper = Join-Path $installDir 'whisper-cli.exe'
+          & $ffmpeg -version | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Kurulan FFmpeg açılamadı' }
+          & $ffprobe -version | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Kurulan ffprobe açılamadı' }
+          & $ytDlp --version | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Kurulan yt-dlp açılamadı' }
+          & $whisper --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Kurulan whisper-cli açılamadı' }
+          $sample = Join-Path $env:RUNNER_TEMP 'tamarillo-smoke.mp4'
+          $audio = Join-Path $env:RUNNER_TEMP 'tamarillo-smoke.mp3'
+          & $ffmpeg -hide_banner -loglevel error -f lavfi -i 'color=c=black:s=64x64:d=0.2' -f lavfi -i 'sine=frequency=1000:duration=0.2' -shortest -c:v libx264 -c:a aac $sample -y
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $sample)) { throw 'Kurulan FFmpeg test videosunu oluşturamadı' }
+          & $ffmpeg -hide_banner -loglevel error -i $sample -vn -c:a libmp3lame $audio -y
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $audio)) { throw 'Kurulan FFmpeg test videosundan MP3 çıkaramadı' }
       - uses: actions/upload-artifact@v4
         with:
           name: Tamarillo-Windows-Setup
