@@ -21,10 +21,15 @@
         {
           "name": "binaries/yt-dlp",
           "sidecar": true
+        },
+        {
+          "name": "binaries/whisper-cli",
+          "sidecar": true
         }
       ]
     },
     "shell:allow-kill",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "clipboard-manager:allow-read-text"
   ]
 }
