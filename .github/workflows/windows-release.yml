@@ -11,11 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+        with: { node-version: 22 }
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
         with: { workspaces: './src-tauri -> target' }
-      - run: npm ci
+      - run: npm install
       - run: npm run tauri:build
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
