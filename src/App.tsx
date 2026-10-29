@@ -50,6 +50,7 @@ export default function App() {
   const [message, setMessage] = useState('');
   const [outputs, setOutputs] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
+  const dragMode = useRef<'tools'|'convert'|'file'|null>(null);
   const [menu, setMenu] = useState<'tools'|'convert'|'file'|null>(null);
   const [search, setSearch] = useState('');
   const [transcript, setTranscript] = useState('');
@@ -132,17 +133,53 @@ export default function App() {
   };
 
   useEffect(() => { getAppInfo().then(setInfo).catch(() => undefined); let stop: (()=>void)|undefined; getCurrentWebview().onDragDropEvent(async event => {
-    if (event.payload.type === 'over' || event.payload.type === 'enter') setDragging(true);
-    else if (event.payload.type === 'leave') setDragging(false);
-    else if (event.payload.type === 'drop') {
-      const paths = event.payload.paths; setDragging(false); addFiles(paths);
+    const payload = event.payload;
+    if (payload.type === 'enter' || payload.type === 'over') {
+      setDragging(true);
+    } else if (payload.type === 'leave') {
+      setDragging(false);
+    } else if (payload.type === 'drop') {
+      const paths = payload.paths;
+      setDragging(false);
       if (paths.length) {
-        let modifiers = heldModifiers.current;
-        try { const nativeModifiers = await invoke<DropModifierState>('drop_modifiers'); modifiers = { shift: modifiers.shift || nativeModifiers.shift, control: modifiers.control || nativeModifiers.control, alt: modifiers.alt || nativeModifiers.alt }; } catch { /* Windows native modifier query is optional outside the desktop app. */ }
-        setMenu(modifiers.shift ? 'convert' : modifiers.control ? 'tools' : modifiers.alt ? 'file' : 'file');
+        addFiles(paths);
+        try {
+          const keys = await invoke<DropModifierState>('drop_modifiers');
+          if (keys.shift) dragMode.current = 'convert';
+          else if (keys.alt) dragMode.current = 'tools';
+          else if (keys.control) dragMode.current = 'file';
+        } catch { /* Keep the mode observed while the drag was over the app. */ }
+        const active = dragMode.current;
+        if (active) {
+          setMenu(active);
+          // If the user released over a wheel petal, open its matching tool.
+          const scale = window.devicePixelRatio || 1;
+          const x = payload.position.x / scale, y = payload.position.y / scale;
+          const target = Array.from(document.querySelectorAll<HTMLButtonElement>('.wheel-grid button')).find(button => {
+            const rect = button.getBoundingClientRect(); return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+          });
+          if (target) {
+            const label = target.querySelector('b')?.textContent;
+            const item = toolNames.find(tool => tool.title === label);
+            if (item) { setPage(item.page); setMenu(null); }
+          }
+        }
       }
+      dragMode.current = null;
     }
   }).then(fn => { stop = fn; }); return () => stop?.(); }, []);
+  useEffect(() => {
+    if (!dragging) return;
+    // Poll while a file drag is in progress: Windows does not send key events
+    // to the WebView because Explorer owns the mouse capture.
+    const id = window.setInterval(() => {
+      void invoke<DropModifierState>('drop_modifiers').then(keys => {
+        const next = keys.shift ? 'convert' : keys.alt ? 'tools' : keys.control ? 'file' : null;
+        if (next) { dragMode.current = next; setMenu(next); }
+      }).catch(() => undefined);
+    }, 40);
+    return () => window.clearInterval(id);
+  }, [dragging]);
   useEffect(() => { localStorage.setItem('tamarillo-script-notes', note); }, [note]);
   useEffect(() => { if (!timerRunning) return; const id = window.setInterval(() => setSeconds(v => { if (v <= 1) { setTimerRunning(false); setTimerComplete(true); return 0; } return v - 1; }), 1000); return () => clearInterval(id); }, [timerRunning]);
   useEffect(() => {
@@ -201,7 +238,7 @@ export default function App() {
 
       {page==='library'&&<><PageIntro eyebrow="BU CİHAZDA" title="Son işlemler" detail="Son çıktılarının klasör yolları bu bilgisayarda saklanır."/>{library.length===0?<div className="empty-state">Henüz tamamlanan bir işlem yok.</div>:<div className="panel history-list">{library.map((path,i)=><div className="history-item" key={`${path}-${i}`}><FileVideo size={17}/><span>{path}</span><button className="icon-button" onClick={()=>void navigator.clipboard.writeText(path)}>Yolu kopyala</button></div>)}</div>}</>}
 
-      {page==='settings'&&<><PageIntro eyebrow="TERCİHLER" title="Ayarlar" detail="Tamarillo’nun Windows kısayolları ve çalışma şekli."/><div className="panel"><h2>Windows kısayolları</h2><ShortcutTable/><div className="split-row"><div><h3>Genel kısayol</h3><p className="muted">Uygulama arka plandayken panodaki bağlantıyı Tamarillo’ya getirir.</p></div><kbd>Ctrl + Shift + D</kbd></div><p className="muted small">Dosyaları Windows Gezgini’nden uygulamaya bırakırken Shift dönüştürme çarkını, Ctrl araç çarkını, Alt dosya işlemleri çarkını açar.</p><div className="setting-row"><span>Görünüm</span><span className="pill">Koyu tema</span></div><div className="setting-row"><span>Uygulama</span><b>{info.name}</b></div><div className="setting-row"><span>Telif</span><b>{info.copyright}</b></div></div></>}
+      {page==='settings'&&<><PageIntro eyebrow="TERCİHLER" title="Ayarlar" detail="Tamarillo’nun Windows kısayolları ve çalışma şekli."/><div className="panel"><h2>Windows kısayolları</h2><ShortcutTable/><div className="split-row"><div><h3>Genel kısayol</h3><p className="muted">Uygulama arka plandayken panodaki bağlantıyı Tamarillo’ya getirir.</p></div><kbd>Ctrl + Shift + D</kbd></div><p className="muted small">Dosyaları Windows Gezgini’nden uygulamaya sürüklerken Shift dönüştürme çarkını, Alt araç çarkını, Ctrl dosya işlemleri çarkını açar. Dosyayı çarktaki seçeneğin üzerine bırak.</p><div className="setting-row"><span>Görünüm</span><span className="pill">Koyu tema</span></div><div className="setting-row"><span>Uygulama</span><b>{info.name}</b></div><div className="setting-row"><span>Telif</span><b>{info.copyright}</b></div></div></>}
 
       <footer>{info.copyright}<span>•</span> Windows masaüstü sürümü</footer>
     </main>
@@ -212,4 +249,4 @@ export default function App() {
 function Status({busy,message,outputs}:{busy:boolean;message:string;outputs:string[]}) { const failed=!busy&&/çalıştırılamadı|açılamadı|başarısız|bulunamadı|hata verdi|boş döndü|okunamadı|indirilemedi/i.test(message); return <div className={`job-message ${failed?'failed':''}`}>{busy?<LoaderCircle size={14} className="spin"/>:failed?<X size={14}/>:<Check size={14}/>}<span>{message}</span>{outputs.length>0&&<div className="output-list">{outputs.slice(0,8).map(path=><code key={path}>{path}</code>)}</div>}</div>; }
 function PageIntro({eyebrow,title,detail}:{eyebrow:string;title:string;detail:string}) { return <section className="page-intro"><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{detail}</p></section>; }
 function FileDrop({files,dragging,onChoose,onClear}:{files:string[];dragging:boolean;onChoose:()=>void;onClear:()=>void}) { return <div className={`drop-card file-drop ${dragging?'dragging':''}`}><div className="upload-icon"><Upload size={20}/></div><div className="drop-copy"><b>{files.length?`${files.length} dosya seçildi`:'Dosyaları buraya bırak'}</b><span>{files.length?files.map(f=>f.split(/[\\/]/).pop()).slice(0,4).join(', '):'Birden fazla dosya seçebilirsin'}</span></div><button className="browse" onClick={onChoose}>Dosya seç</button>{files.length>0&&<button className="icon-button" onClick={onClear}><X size={16}/></button>}</div>; }
-function ShortcutTable() { const rows=[['Shift + dosya bırakma','Dönüştürme işlemlerini aç'],['Ctrl + dosya bırakma','Araç seçimini aç'],['Alt + dosya bırakma','Dosya işlemlerini aç'],['Ctrl + Shift + D','Panodaki bağlantıyı getir (genel kısayol)'],['Ctrl + O','Dosya seç'],['Ctrl + Space','Araç çarkını aç'],['Ctrl + 2','Son işlemleri aç'],['Ctrl + F','Araçları ara'],['↑ / ↓ / ← / →','Çarkta araç seç'],['Home / End','İlk / son araca git'],['Enter / Space','Seçili aracı aç'],['Esc / Tab','Çarkı kapat']];return <div className="shortcut-table">{rows.map(([key,action])=><div key={key+action}><kbd>{key}</kbd><span>{action}</span></div>)}</div>; }
+function ShortcutTable() { const rows=[['Shift + sürükleme','Dönüştürme çarkı'],['Alt + sürükleme','Araç çarkı'],['Ctrl + sürükleme','Dosya işlemleri çarkı'],['Ctrl + Shift + D','Panodaki bağlantıyı getir (genel kısayol)'],['Ctrl + O','Dosya seç'],['Ctrl + Space','Araç çarkını aç'],['Ctrl + 2','Son işlemleri aç'],['Ctrl + F','Araçları ara'],['↑ / ↓ / ← / →','Çarkta araç seç'],['Home / End','İlk / son araca git'],['Enter / Space','Seçili aracı aç'],['Esc / Tab','Çarkı kapat']];return <div className="shortcut-table">{rows.map(([key,action])=><div key={key+action}><kbd>{key}</kbd><span>{action}</span></div>)}</div>; }
