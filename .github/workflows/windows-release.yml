@@ -65,7 +65,13 @@ jobs:
           $installer = Get-ChildItem 'src-tauri/target/release/bundle/nsis' -Filter '*setup.exe' | Select-Object -First 1
           if (-not $installer) { throw 'NSIS kurulum dosyası bulunamadı' }
           $installDir = Join-Path $env:RUNNER_TEMP 'TamarilloSmoke'
-          Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$installDir") -Wait
+          & $installer.FullName /S /CURRENTUSER "/D=$installDir"
+          if ($LASTEXITCODE -ne 0) { throw "Tamarillo kurulumu başarısız: $LASTEXITCODE" }
+          if (-not (Test-Path (Join-Path $installDir 'tamarillo.exe'))) {
+            $installed = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Tamarillo' -ErrorAction SilentlyContinue
+            if ($installed.InstallLocation) { $installDir = $installed.InstallLocation.Trim('"') }
+          }
+          Write-Output "Smoke test kurulum klasörü: $installDir"
           $required = @('Tamarillo.exe', 'ffmpeg.exe', 'ffprobe.exe', 'yt-dlp.exe', 'whisper-cli.exe')
           $missing = $required | Where-Object { -not (Test-Path (Join-Path $installDir $_)) }
           if ($missing) { throw "Kurulum paketinde eksik dosyalar: $($missing -join ', ')" }
