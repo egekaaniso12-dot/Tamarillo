@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { invoke } from '@tauri-apps/api/core';
@@ -150,7 +150,7 @@ export default function App() {
       else if ((event.ctrlKey || event.metaKey) && event.key === '2' && !typing) { event.preventDefault(); setPage('library'); }
       else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); setMenu('tools'); window.setTimeout(() => searchRef.current?.focus(), 20); }
       else if (event.key === 'Escape') setMenu(null);
-      else if (menu && ['ArrowDown','ArrowRight','ArrowUp','ArrowLeft'].includes(event.key)) { event.preventDefault(); const buttons=Array.from(document.querySelectorAll<HTMLButtonElement>('.wheel-grid button')); const active=buttons.indexOf(document.activeElement as HTMLButtonElement); const delta=event.key==='ArrowDown'||event.key==='ArrowRight'?1:-1; buttons[(active+delta+buttons.length)%buttons.length]?.focus(); }
+      else if (menu && ['ArrowDown','ArrowRight','ArrowUp','ArrowLeft'].includes(event.key)) { event.preventDefault(); const buttons=Array.from(document.querySelectorAll<HTMLButtonElement>('.wheel-grid button')); const active=buttons.indexOf(document.activeElement as HTMLButtonElement); const delta=event.key==='ArrowDown'||event.key==='ArrowRight'?1:-1; buttons[active<0?0:(active+delta+buttons.length)%buttons.length]?.focus(); }
     };
     const keyup=()=>{heldModifiers.current={shift:false,control:false,alt:false};};
     window.addEventListener('keydown', key); window.addEventListener('keyup', keyup); return () => {window.removeEventListener('keydown', key);window.removeEventListener('keyup',keyup);};
@@ -161,6 +161,7 @@ export default function App() {
   const openPage = (next: Page) => { setPage(next); setMenu(null); setMessage(''); };
   const initials = info.name?.slice(0, 1).toLocaleLowerCase('tr') || 't';
   const formatTime = `${String(Math.floor(seconds / 60)).padStart(2,'0')}:${String(seconds % 60).padStart(2,'0')}`;
+  const wheelItems = menu==='tools' ? filteredTools : toolNames.filter(t=>menu==='convert'?t.page==='media'||t.page==='images':t.page==='library'||t.page==='media'||t.page==='download');
 
   return <div className="shell">
     <aside className="sidebar"><div className="brand"><div className="brand-mark">{initials}</div><div><b>Tamarillo</b><small>CREATOR TOOLKIT</small></div></div><div className="side-label">ÇALIŞMA ALANI</div>
@@ -196,7 +197,7 @@ export default function App() {
 
       <footer>{info.copyright}<span>•</span> Windows masaüstü sürümü</footer>
     </main>
-    {menu&&<div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&setMenu(null)}><div className="wheel-modal"><div className="modal-head"><div><small>HIZLI ERİŞİM · WINDOWS</small><h2>{menu==='tools'?'Bir araç seç':menu==='convert'?'Dönüştürme çarkı':'Dosya işlemi seç'}</h2></div><button className="icon-button" onClick={()=>setMenu(null)}><X size={18}/></button></div>{menu==='tools'&&<div className="search-box"><Search size={16}/><input ref={searchRef} value={search} onChange={e=>setSearch(e.target.value)} placeholder="Araçlarda ara…"/><kbd>Ctrl F</kbd></div>}<div className="wheel-grid">{(menu==='tools'?filteredTools:toolNames.filter(t=>menu==='convert'?t.page==='media'||t.page==='images':t.page==='library'||t.page==='media'||t.page==='download')).map(({page:p,title:label,text,icon:Icon,shortcut})=><button key={label} onClick={()=>openPage(p)}><span className="tool-icon"><Icon size={18}/></span><span><b>{label}</b><small>{text}</small></span><kbd>{shortcut}</kbd></button>)}</div><div className="modal-foot">↑ ↓ seç · Enter aç · Esc kapat <span>Ctrl + O dosya seç</span></div></div></div>}
+    {menu&&<div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&setMenu(null)}><div className="wheel-modal"><div className="modal-head"><div><small>HIZLI ERİŞİM · WINDOWS</small><h2>{menu==='tools'?'Bir araç seç':menu==='convert'?'Dönüştürme çarkı':'Dosya işlemi seç'}</h2></div><button className="icon-button" onClick={()=>setMenu(null)}><X size={18}/></button></div>{menu==='tools'&&<div className="search-box"><Search size={16}/><input ref={searchRef} value={search} onChange={e=>setSearch(e.target.value)} placeholder="Araçlarda ara…"/><kbd>Ctrl F</kbd></div>}<div className="wheel-grid"><div className="wheel-core"><span>t</span><small>TAMARILLO</small></div>{wheelItems.map(({page:p,title:label,text,icon:Icon,shortcut},index)=>{const angle=(360*index/Math.max(wheelItems.length,1))-90;return <button key={label} style={{'--angle':`${angle}deg`,'--reverse-angle':`${-angle}deg`} as CSSProperties} onClick={()=>openPage(p)}><span className="tool-icon"><Icon size={18}/></span><span><b>{label}</b><small>{text}</small></span><kbd>{shortcut}</kbd></button>;})}</div><div className="modal-foot">↑ ↓ seç · Enter aç · Esc kapat <span>Ctrl + O dosya seç</span></div></div></div>}
   </div>;
 }
 
