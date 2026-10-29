@@ -9,7 +9,7 @@
 ## Çalışan araçlar
 
 - **Medya:** MP4 sıkıştırma ve dönüştürme, MOV/WebM çıktı, MP3/WAV ses ayırma, videodaki sessiz aralıkları analiz edip kesme.
-- **Video çarkı:** Sıkıştırma, metadata kaldırma, sesi silme, 16:9 kırpma, hız, kare alma, bölme, bulanıklaştırma ve süre kesme. Her işlem ayrı ayar penceresi açar; kalite, süre, kırpma alanı ve hedef klasör seçilebilir.
+- **Video çarkı:** Sıkıştırma, metadata kaldırma, sesi silme, 16:9 kırpma, hız, kare alma, bölme, bulanıklaştırma ve süre kesme. İşlem pencereleri video önizlemesi ve film şeridi gösterir; kırpma alanı önizleme üzerinde ayarlanır, kare alma aracı çoklu PNG seçimini destekler.
 - **İndirme:** yt-dlp ile desteklenen herkese açık bağlantıdan en iyi video kalitesi veya MP3 ses indirme.
 - **Altyazı ve özet:** YouTube altyazısı / otomatik altyazısı indirme; Whisper.cpp tabanlı yerel ses/video transkripsiyonu; metin üzerinde cihaz içi, extractive özet oluşturma.
 - **Görseller:** Toplu yeniden boyutlandırma, JPEG sıkıştırma, PNG/JPG/WebP dönüştürme ve görsel filigran.

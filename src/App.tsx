@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readText } from '@tauri-apps/plugin-clipboard-manager';
 import { AudioLines, BookOpen, Check, ChevronRight, Clapperboard, Clock3, Command, Download, FileAudio, FileImage, FileVideo, FolderOpen, Image as ImageIcon, Keyboard, Link2, LoaderCircle, Mic2, Music2, Search, Settings2, Sparkles, Timer, Upload, WandSparkles, X } from 'lucide-react';
@@ -58,6 +58,7 @@ export default function App() {
   const [cropWidth, setCropWidth] = useState(1920); const [cropHeight, setCropHeight] = useState(1080);
   const [cropX, setCropX] = useState(0); const [cropY, setCropY] = useState(0);
   const [videoSpeed, setVideoSpeed] = useState(1.25); const [frameTime, setFrameTime] = useState(1);
+  const [selectedFrameTimes, setSelectedFrameTimes] = useState<{time:number;thumbnail:string}[]>([]);
   const [splitParts, setSplitParts] = useState(2); const [blurRadius, setBlurRadius] = useState(10);
   const [trimStart, setTrimStart] = useState(0); const [trimDuration, setTrimDuration] = useState(30);
   const [dragging, setDragging] = useState(false);
@@ -143,12 +144,15 @@ export default function App() {
     setBusy(true); setMessage('Video işleniyor…'); const done: string[] = [];
     try {
       for (const input of videoDialog.paths) {
-        const result = await invoke<Result[]>('process_video_action', {
-          input, action: videoDialog.action, outputDir: videoOutputDir || null,
-          quality: videoQuality, preset: videoPreset, start: trimStart, duration: trimDuration,
-          cropWidth, cropHeight, cropX, cropY, speed: videoSpeed, frameTime, splitParts, blurRadius,
-        });
-        done.push(...result.map(item => item.output));
+        const times = videoDialog.action==='screenshot'&&selectedFrameTimes.length ? selectedFrameTimes.map(frame=>frame.time) : [frameTime];
+        for (const time of times) {
+          const result = await invoke<Result[]>('process_video_action', {
+            input, action: videoDialog.action, outputDir: videoOutputDir || null,
+            quality: videoQuality, preset: videoPreset, start: trimStart, duration: trimDuration,
+            cropWidth, cropHeight, cropX, cropY, speed: videoSpeed, frameTime: time, splitParts, blurRadius,
+          });
+          done.push(...result.map(item => item.output));
+        }
       }
       remember(done); setMessage(`${done.length} çıktı oluşturuldu`); setVideoDialog(null);
     } catch (error) { setMessage(String(error)); } finally { setBusy(false); }
@@ -225,7 +229,7 @@ export default function App() {
     }).then(fn => { unlistenResult = fn; });
     let unlistenVideo: (()=>void)|undefined;
     listen<{paths:string[];action:VideoAction}>('desktop-video-action-request', event => {
-      setFiles(event.payload.paths); setPage('media'); setMenu(null); setVideoOutputDir(''); setMessage(''); setOutputs([]);
+      setFiles(event.payload.paths); setPage('media'); setMenu(null); setVideoOutputDir(''); setMessage(''); setOutputs([]); setSelectedFrameTimes([]);
       setVideoDialog({ paths:event.payload.paths, action:event.payload.action });
       setVideoQuality(23); setVideoPreset('fast'); setFrameTime(1); setSplitParts(2); setBlurRadius(10);
       setCropWidth(1920); setCropHeight(1080); setCropX(0); setCropY(0); setVideoSpeed(1.25); setTrimStart(0); setTrimDuration(30);
@@ -300,10 +304,11 @@ export default function App() {
       {menu&&<div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&setMenu(null)}><div className="wheel-modal"><div className="modal-head"><div><small>HIZLI ERİŞİM · WINDOWS</small><h2>{menu==='tools'?'Bir araç seç':menu==='convert'?'Dönüştürme çarkı':'Dosya işlemi seç'}</h2></div><button className="icon-button" onClick={()=>setMenu(null)}><X size={18}/></button></div>{menu==='tools'&&<div className="search-box"><Search size={16}/><input ref={searchRef} value={search} onChange={e=>setSearch(e.target.value)} placeholder="Araçlarda ara…"/><kbd>Ctrl F</kbd></div>}<div className="wheel-grid"><div className="wheel-core"><span>t</span><small>TAMARILLO</small></div>{wheelItems.map(({page:p,title:label,text,icon:Icon,shortcut},index)=>{const angle=(360*index/Math.max(wheelItems.length,1))-90;return <button key={label} style={{'--angle':`${angle}deg`,'--reverse-angle':`${-angle}deg`} as CSSProperties} onClick={()=>openPage(p)}><span className="tool-icon"><Icon size={18}/></span><span><b>{label}</b><small>{text}</small></span><kbd>{shortcut}</kbd></button>;})}</div><div className="modal-foot">↑ ↓ seç · Enter aç · Esc kapat <span>Ctrl + O dosya seç</span></div></div></div>}
       {videoDialog&&<div className="modal-backdrop video-action-backdrop"><div className="video-action-window" role="dialog" aria-modal="true"><div className="modal-head"><div><small>VİDEO İŞLEMİ · FFmpeg</small><h2>{videoActionLabel(videoDialog.action)}</h2><p className="muted">{videoDialog.paths.length} video seçildi · Ayarlarını yap, sonra yeni kopya oluştur.</p></div><button className="icon-button" onClick={()=>!busy&&setVideoDialog(null)}><X size={18}/></button></div>
         <div className="video-source-list">{videoDialog.paths.map(path=><div key={path}><FileVideo size={15}/><span>{path.split(/[\\/]/).pop()}</span></div>)}</div>
+        <VideoEditorPreview path={videoDialog.paths[0]} action={videoDialog.action} onTime={setFrameTime} selectedFrames={selectedFrameTimes} onAddFrame={(time,thumbnail)=>setSelectedFrameTimes(current=>current.some(v=>Math.abs(v.time-time)<0.02)?current:[...current,{time,thumbnail}].sort((a,b)=>a.time-b.time))} onRemoveFrame={time=>setSelectedFrameTimes(current=>current.filter(v=>v.time!==time))} crop={{x:cropX,y:cropY,width:cropWidth,height:cropHeight}} onCrop={box=>{setCropX(box.x);setCropY(box.y);setCropWidth(box.width);setCropHeight(box.height);}} />
         {videoDialog.action==='compress'&&<><label className="field-label">Kalite · CRF {videoQuality} <span className="muted">(küçük sayı daha yüksek kalite)</span></label><input className="video-range" type="range" min="16" max="35" value={videoQuality} onChange={e=>setVideoQuality(Number(e.target.value))}/><label className="field-label">Kodlama hızı</label><select className="video-select" value={videoPreset} onChange={e=>setVideoPreset(e.target.value)}>{['ultrafast','superfast','veryfast','faster','fast','medium','slow','slower'].map(v=><option key={v}>{v}</option>)}</select></>}
         {videoDialog.action==='crop'&&<><p className="muted">Çıktı kırpma boyutu ve kaynak kare içindeki başlangıç koordinatlarını ayarla (piksel).</p><div className="form-row"><label>Genişlik <input className="number-input" type="number" min="16" value={cropWidth} onChange={e=>setCropWidth(Number(e.target.value))}/></label><label>Yükseklik <input className="number-input" type="number" min="16" value={cropHeight} onChange={e=>setCropHeight(Number(e.target.value))}/></label></div><div className="form-row"><label>Sol X <input className="number-input" type="number" min="0" value={cropX} onChange={e=>setCropX(Number(e.target.value))}/></label><label>Üst Y <input className="number-input" type="number" min="0" value={cropY} onChange={e=>setCropY(Number(e.target.value))}/></label></div><p className="muted small">Video görüntü boyutunu öğrenmek için Medya bölümünde ffprobe bilgisi kullanılabilir; çerçeve dışına taşan değerlerde FFmpeg hata verir.</p></>}
         {videoDialog.action==='speed'&&<><label className="field-label">Oynatma hızı: {videoSpeed.toFixed(2)}×</label><input className="video-range" type="range" min="0.25" max="4" step="0.05" value={videoSpeed} onChange={e=>setVideoSpeed(Number(e.target.value))}/><p className="muted">Ses hızı da videoyla eşleşecek şekilde ayarlanır.</p></>}
-        {videoDialog.action==='screenshot'&&<><label className="field-label">Kare alınacak zaman (saniye)</label><input className="number-input" type="number" min="0" step="0.1" value={frameTime} onChange={e=>setFrameTime(Number(e.target.value))}/></>}
+        {videoDialog.action==='screenshot'&&<>{selectedFrameTimes.length>0&&<div className="picked-frames"><b>{selectedFrameTimes.length} kare seçildi</b>{selectedFrameTimes.map((frame,index)=><span key={`${frame.time}-${index}`}><img src={frame.thumbnail||undefined} alt="Seçilen video karesi"/><small>{formatVideoTime(frame.time)}</small><button className="icon-button" onClick={()=>setSelectedFrameTimes(current=>current.filter(v=>v.time!==frame.time))}><X size={12}/></button></span>)}</div>}<p className="muted small">Önizlemede istediğin ana gel, “Kare Ekle” ile birden fazla kare işaretle. İşlem seçilen kareleri PNG olarak kaydeder.</p></>}
         {videoDialog.action==='split'&&<><label className="field-label">Kaç parçaya bölünsün?</label><input className="number-input" type="number" min="2" max="20" value={splitParts} onChange={e=>setSplitParts(Number(e.target.value))}/><p className="muted">Parçalar eşit süreli olacak ve ayrı MP4 dosyaları oluşturulacak.</p></>}
         {videoDialog.action==='blur'&&<><label className="field-label">Bulanıklık gücü: {blurRadius}</label><input className="video-range" type="range" min="1" max="30" value={blurRadius} onChange={e=>setBlurRadius(Number(e.target.value))}/></>}
         {videoDialog.action==='trim'&&<div className="form-row"><label>Başlangıç (sn) <input className="number-input" type="number" min="0" step="0.1" value={trimStart} onChange={e=>setTrimStart(Number(e.target.value))}/></label><label>Süre (sn) <input className="number-input" type="number" min="0.1" step="0.1" value={trimDuration} onChange={e=>setTrimDuration(Number(e.target.value))}/></label></div>}
@@ -316,6 +321,61 @@ export default function App() {
 }
 
 function videoActionLabel(action:VideoAction) { return ({compress:'Videoyu sıkıştır',metadata:'Metadata kaldır',mute:'Sesi kaldır',crop:'Videoyu kırp',speed:'Oynatma hızını değiştir',screenshot:'Videodan kare al',split:'Videoyu parçalara böl',blur:'Videoyu bulanıklaştır',trim:'Video bölümünü kes'} as const)[action]; }
+function formatVideoTime(seconds:number) { const value=Math.max(0,seconds||0);const minutes=Math.floor(value/60);return `${String(minutes).padStart(2,'0')}:${(value-minutes*60).toFixed(3).padStart(6,'0')}`; }
+type CropBox={x:number;y:number;width:number;height:number};
+function VideoEditorPreview({path,action,onTime,selectedFrames,onAddFrame,onRemoveFrame,crop,onCrop}:{path:string;action:VideoAction;onTime:(time:number)=>void;selectedFrames:{time:number;thumbnail:string}[];onAddFrame:(time:number,thumbnail:string)=>void;onRemoveFrame:(time:number)=>void;crop:CropBox;onCrop:(box:CropBox)=>void}) {
+  const player=useRef<HTMLVideoElement>(null);const stage=useRef<HTMLDivElement>(null);const gesture=useRef<{mode:'move'|'draw'|'resize';x:number;y:number;box:CropBox;corner?:string}|null>(null);const proxyTried=useRef(false);
+  const [src,setSrc]=useState(()=>convertFileSrc(path));const [duration,setDuration]=useState(0);const [current,setCurrent]=useState(0);const [size,setSize]=useState({width:0,height:0});const [playing,setPlaying]=useState(false);const [thumbs,setThumbs]=useState<string[]>([]);const [previewError,setPreviewError]=useState('');
+  useEffect(()=>{setSrc(convertFileSrc(path));setDuration(0);setCurrent(0);setSize({width:0,height:0});setThumbs([]);setPreviewError('');proxyTried.current=false;},[path]);
+  useEffect(()=>{
+    if(!src)return;let cancelled=false;const hidden=document.createElement('video');hidden.src=src;hidden.muted=true;hidden.preload='auto';
+    const makeThumbs=async()=>{try{await new Promise<void>((resolve,reject)=>{hidden.onloadedmetadata=()=>resolve();hidden.onerror=()=>reject(new Error('video decode error'));setTimeout(()=>reject(new Error('preview timeout')),12000);});if(cancelled)return;const length=hidden.duration;const canvas=document.createElement('canvas');canvas.width=220;canvas.height=124;const ctx=canvas.getContext('2d');if(!ctx)return;const shots:string[]=[];for(let i=0;i<10&&!cancelled;i++){const at=length<0.1?0:(length-.001)*i/9;await new Promise<void>(resolve=>{if(Math.abs(hidden.currentTime-at)<0.001){resolve();return;}hidden.onseeked=()=>resolve();hidden.currentTime=at;window.setTimeout(resolve,2500);});try{ctx.drawImage(hidden,0,0,canvas.width,canvas.height);shots.push(canvas.toDataURL('image/jpeg',.68));}catch{break;}}if(!cancelled)setThumbs(shots);}catch{if(!cancelled)setThumbs([]);}};void makeThumbs();return()=>{cancelled=true;hidden.removeAttribute('src');hidden.load();};
+  },[src]);
+  const updateTime=()=>{const value=player.current?.currentTime??0;setCurrent(value);onTime(value);};
+  const addCurrentFrame=()=>{const element=player.current;if(!element)return;const canvas=document.createElement('canvas');canvas.width=element.videoWidth||640;canvas.height=element.videoHeight||360;let thumbnail='';try{canvas.getContext('2d')?.drawImage(element,0,0,canvas.width,canvas.height);thumbnail=canvas.toDataURL('image/jpeg',.8);}catch{}onAddFrame(element.currentTime,thumbnail);};
+  const point=(event:ReactPointerEvent)=>{const rect=stage.current?.getBoundingClientRect();if(!rect||!size.width||!size.height)return null;return {x:Math.max(0,Math.min(size.width,(event.clientX-rect.left)*size.width/rect.width)),y:Math.max(0,Math.min(size.height,(event.clientY-rect.top)*size.height/rect.height))};};
+  const onPointerDown=(event:ReactPointerEvent)=>{if(action!=='crop')return;const p=point(event);if(!p)return;event.preventDefault();stage.current?.setPointerCapture(event.pointerId);const inside=p.x>=crop.x&&p.x<=crop.x+crop.width&&p.y>=crop.y&&p.y<=crop.y+crop.height;const corner=((event.target as HTMLElement).closest('[data-corner]') as HTMLElement|null)?.dataset.corner;gesture.current={mode:corner?'resize':inside?'move':'draw',x:p.x,y:p.y,box:{...crop},corner};if(!inside&&!corner)onCrop({x:Math.floor(p.x/2)*2,y:Math.floor(p.y/2)*2,width:2,height:2});};
+  const onPointerMove = (event: ReactPointerEvent) => {
+    const g = gesture.current;
+    if (!g) return;
+    const p = point(event);
+    if (!p) return;
+    if (g.mode === 'move') {
+      const x = Math.round(Math.max(0, Math.min(size.width - g.box.width, g.box.x + p.x - g.x)) / 2) * 2;
+      const y = Math.round(Math.max(0, Math.min(size.height - g.box.height, g.box.y + p.y - g.y)) / 2) * 2;
+      onCrop({ ...g.box, x, y });
+    } else if (g.mode === 'resize') {
+      const c = g.corner ?? 'SE';
+      const anchorX = c.includes('W') ? g.box.x + g.box.width : g.box.x;
+      const anchorY = c.includes('N') ? g.box.y + g.box.height : g.box.y;
+      const width = Math.max(16, Math.abs(p.x - anchorX));
+      const height = Math.max(16, Math.abs(p.y - anchorY));
+      const x = c.includes('W') ? anchorX - width : anchorX;
+      const y = c.includes('N') ? anchorY - height : anchorY;
+      onCrop({ x: Math.max(0, Math.floor(x / 2) * 2), y: Math.max(0, Math.floor(y / 2) * 2), width: Math.max(16, Math.floor(Math.min(width, size.width - x) / 2) * 2), height: Math.max(16, Math.floor(Math.min(height, size.height - y) / 2) * 2) });
+    } else {
+      const x = Math.min(g.x, p.x);
+      const y = Math.min(g.y, p.y);
+      const width = Math.max(2, Math.abs(p.x - g.x));
+      const height = Math.max(2, Math.abs(p.y - g.y));
+      onCrop({ x: Math.floor(x / 2) * 2, y: Math.floor(y / 2) * 2, width: Math.max(2, Math.floor(Math.min(width, size.width - x) / 2) * 2), height: Math.max(2, Math.floor(Math.min(height, size.height - y) / 2) * 2) });
+    }
+  };
+  const onPointerUp=()=>{gesture.current=null;};
+  const handleKey=(event:ReactKeyboardEvent)=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();if(player.current)player.current.currentTime=Math.max(0,Math.min(duration,player.current.currentTime+(event.shiftKey?(event.key==='ArrowLeft'?-1:1):(event.key==='ArrowLeft'?-1/30:1/30))));}};
+  return <section className="video-preview-panel"><div className="preview-heading"><b>ÖNİZLEME</b><span>{size.width>0?`${size.width} × ${size.height}`:'Video yükleniyor…'}</span></div><div ref={stage} className="video-stage" style={{aspectRatio:size.width&&size.height?`${size.width}/${size.height}`:'16/9'}} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onKeyDown={handleKey} tabIndex={0} onClick={()=>{if(action!=='crop'&&player.current){if(player.current.paused)void player.current.play();else player.current.pause();}}}>
+    <video ref={player} src={src} preload="metadata" playsInline onLoadedMetadata={event=>{const video=event.currentTarget;setDuration(Number.isFinite(video.duration)?video.duration:0);setSize({width:video.videoWidth,height:video.videoHeight});}} onTimeUpdate={updateTime} onPlay={()=>setPlaying(true)} onPause={()=>setPlaying(false)} onError={()=>{if(!proxyTried.current){proxyTried.current=true;setPreviewError('Bu biçim için önizleme hazırlanıyor…');void invoke<string>('create_video_preview',{input:path}).then(preview=>{setSrc(convertFileSrc(preview));setPreviewError('');}).catch(error=>setPreviewError(`Önizleme açılamadı: ${String(error)}`));}else setPreviewError('Bu video biçimi önizlenemedi. Düzenleme işlemi kaynak dosyada yine çalıştırılabilir.');}}/>
+    {action==='crop'&&size.width>0&&<div className="crop-selection" style={{left:`${crop.x/size.width*100}%`,top:`${crop.y/size.height*100}%`,width:`${crop.width/size.width*100}%`,height:`${crop.height/size.height*100}%`}}><i data-corner="NW"/><i data-corner="NE"/><i data-corner="SW"/><i data-corner="SE"/></div>}
+    {action!=='crop'&&<button className="preview-play" onClick={event=>{event.stopPropagation();if(player.current){if(player.current.paused)void player.current.play();else player.current.pause();}}}>{playing?'Ⅱ':'▶'}</button>}
+  </div>{previewError&&<p className="preview-error">{previewError}</p>}
+  <div className="video-filmstrip">{thumbs.length?thumbs.map((thumb,index)=><button key={index} onClick={()=>{if(player.current)player.current.currentTime=duration*index/Math.max(thumbs.length-1,1);}} title={formatVideoTime(duration*index/Math.max(thumbs.length-1,1))}><img src={thumb}/></button>):<div className="filmstrip-empty">Kare önizlemeleri hazırlanıyor…</div>}</div>
+  <input className="video-timeline" aria-label="Video zaman çizgisi" type="range" min="0" max={Math.max(duration,.001)} step="0.001" value={Math.min(current,duration||0)} onChange={event=>{const value=Number(event.target.value);if(player.current)player.current.currentTime=value;setCurrent(value);onTime(value);}}/>
+  <div className="preview-controls"><button className="browse" onClick={()=>{if(player.current)player.current.currentTime=Math.max(0,player.current.currentTime-1/30);}}>−1 kare</button><button className="browse" onClick={()=>{if(player.current)player.current.currentTime=Math.min(duration,player.current.currentTime+1/30);}}>+1 kare</button><span>{formatVideoTime(current)} / {formatVideoTime(duration)}</span>{action==='screenshot'&&<button className="primary" onClick={addCurrentFrame}>Kare Ekle</button>}</div>
+  {action==='crop'&&<p className="muted small crop-hint">Önizlemede yeni alan çiz veya mevcut alanı sürükleyerek taşı. Ölçüler piksel olarak uygulanır: {crop.width} × {crop.height}, X {crop.x}, Y {crop.y}.</p>}
+  {action==='screenshot'&&<p className="muted small crop-hint">← / →: 1 kare · Shift + ← / →: 1 saniye · Önizleme çubuğundan kareye git, “Kare Ekle” ile işaretle.</p>}
+  {selectedFrames.length>0&&action==='screenshot'&&<div className="preview-selected-count">Seçili kareler: {selectedFrames.length} <button className="text-button" onClick={()=>selectedFrames.forEach(f=>onRemoveFrame(f.time))}>Tümünü temizle</button></div>}
+  </section>;
+}
 function Status({busy,message,outputs}:{busy:boolean;message:string;outputs:string[]}) { const failed=!busy&&/çalıştırılamadı|açılamadı|başarısız|bulunamadı|hata verdi|boş döndü|okunamadı|indirilemedi/i.test(message); return <div className={`job-message ${failed?'failed':''}`}>{busy?<LoaderCircle size={14} className="spin"/>:failed?<X size={14}/>:<Check size={14}/>}<span>{message}</span>{outputs.length>0&&<div className="output-list">{outputs.slice(0,8).map(path=><code key={path}>{path}</code>)}</div>}</div>; }
 function PageIntro({eyebrow,title,detail}:{eyebrow:string;title:string;detail:string}) { return <section className="page-intro"><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{detail}</p></section>; }
 function FileDrop({files,dragging,onChoose,onClear}:{files:string[];dragging:boolean;onChoose:()=>void;onClear:()=>void}) { return <div className={`drop-card file-drop ${dragging?'dragging':''}`}><div className="upload-icon"><Upload size={20}/></div><div className="drop-copy"><b>{files.length?`${files.length} dosya seçildi`:'Dosyaları buraya bırak'}</b><span>{files.length?files.map(f=>f.split(/[\\/]/).pop()).slice(0,4).join(', '):'Birden fazla dosya seçebilirsin'}</span></div><button className="browse" onClick={onChoose}>Dosya seç</button>{files.length>0&&<button className="icon-button" onClick={onClear}><X size={16}/></button>}</div>; }

@@ -112,7 +112,7 @@ jobs:
           path: release-assets
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.5
+          tag_name: v0.1.6
           target_commitish: ${{ github.sha }}
           files: release-assets/*.exe
           generate_release_notes: true

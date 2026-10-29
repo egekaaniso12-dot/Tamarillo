@@ -306,6 +306,23 @@ async fn process_video_action(
     Ok(outputs.into_iter().map(|path| JobResult { output: path.to_string_lossy().into_owned(), message: "Video işlemi tamamlandı".into(), content: None }).collect())
 }
 
+#[tauri::command]
+async fn create_video_preview(app: AppHandle, input: String) -> Result<String, String> {
+    let source = PathBuf::from(input).canonicalize().map_err(|_| "Video dosyası bulunamadı".to_string())?;
+    if !source.is_file() { return Err("Önizleme kaynağı dosya değil".into()); }
+    let mut hasher = Sha1::new(); hasher.update(source.to_string_lossy().as_bytes());
+    if let Ok(metadata) = std::fs::metadata(&source) { hasher.update(metadata.len().to_le_bytes()); }
+    let key = format!("{:x}",hasher.finalize());
+    let folder = app.path().app_cache_dir().map_err(|e|format!("Önizleme önbelleği açılamadı: {e}"))?.join("video-previews");
+    std::fs::create_dir_all(&folder).map_err(|e|format!("Önizleme klasörü oluşturulamadı: {e}"))?;
+    let preview = folder.join(format!("{key}.mp4"));
+    if !preview.exists() {
+        let args=vec!["-hide_banner".into(),"-y".into(),"-i".into(),source.to_string_lossy().into_owned(),"-vf".into(),"scale=w='min(1280,iw)':h=-2".into(),"-c:v".into(),"libx264".into(),"-preset".into(),"veryfast".into(),"-crf".into(),"25".into(),"-pix_fmt".into(),"yuv420p".into(),"-c:a".into(),"aac".into(),"-b:a".into(),"128k".into(),"-movflags".into(),"+faststart".into(),preview.to_string_lossy().into_owned()];
+        sidecar_capture(&app,"ffmpeg",args).await.map_err(|e|format!("Video önizlemesi hazırlanamadı: {e}"))?;
+    }
+    Ok(preview.to_string_lossy().into_owned())
+}
+
 fn safe_output(input: &Path, suffix: &str, ext: &str) -> Result<PathBuf, String> {
     let stem = input.file_stem().and_then(|s| s.to_str()).ok_or("Dosya adı okunamadı")?;
     let parent = input.parent().ok_or("Kaynak klasörü bulunamadı")?;
@@ -566,6 +583,6 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![app_info, drop_modifiers, complete_desktop_drop, process_video_action, convert_media, trim_video_silence, process_images, transcribe_media, transcribe_url, download_video, download_captions, probe_media])
+        .invoke_handler(tauri::generate_handler![app_info, drop_modifiers, complete_desktop_drop, process_video_action, create_video_preview, convert_media, trim_video_silence, process_images, transcribe_media, transcribe_url, download_video, download_captions, probe_media])
         .run(tauri::generate_context!()).expect("Tamarillo başlatılamadı");
 }
