@@ -9,6 +9,7 @@
 ## Çalışan araçlar
 
 - **Medya:** MP4 sıkıştırma ve dönüştürme, MOV/WebM çıktı, MP3/WAV ses ayırma, videodaki sessiz aralıkları analiz edip kesme.
+- **Video çarkı:** Sıkıştırma, metadata kaldırma, sesi silme, 16:9 kırpma, hız, kare alma, bölme, bulanıklaştırma ve süre kesme. Her işlem ayrı ayar penceresi açar; kalite, süre, kırpma alanı ve hedef klasör seçilebilir.
 - **İndirme:** yt-dlp ile desteklenen herkese açık bağlantıdan en iyi video kalitesi veya MP3 ses indirme.
 - **Altyazı ve özet:** YouTube altyazısı / otomatik altyazısı indirme; Whisper.cpp tabanlı yerel ses/video transkripsiyonu; metin üzerinde cihaz içi, extractive özet oluşturma.
 - **Görseller:** Toplu yeniden boyutlandırma, JPEG sıkıştırma, PNG/JPG/WebP dönüştürme ve görsel filigran.
@@ -32,9 +33,9 @@ Dosyalar varsayılan olarak yerelde işlenir. Video/ses ve görsel çıktıları
 | `Home / End` | İlk / son araca git |
 | `Enter / Space` | Seçili aracı aç |
 | `Esc / Tab` | Çarkı kapat |
-| `Shift` + dosya bırakma | Dönüştürme çarkı |
-| `Ctrl` + dosya bırakma | Araç çarkı |
-| `Alt` + dosya bırakma | Dosya işlemleri |
+| `Shift` + dosya sürükleme | Dönüştürme çarkı |
+| `Alt` + dosya sürükleme | Araç ve video işlemleri çarkı |
+| `Ctrl` + dosya sürükleme | Pencere yerleşim çarkı |
 
 Windows Explorer sürükle-bırak olayları bazı sistemlerde basılı modifier tuşunu uygulamaya iletmez. Bu durumda dosya bırakıldıktan sonra araç seçme penceresi görünür.
 

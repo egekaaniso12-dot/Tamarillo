@@ -50,16 +50,22 @@ fn drop_modifiers() -> DropModifiers {
 }
 
 #[cfg(windows)]
-fn set_drag_overlay(app: &AppHandle, visible: bool) {
+fn set_drag_overlay(app: &AppHandle, visible: bool, cursor: Option<WinPoint>) {
     if let Some(window) = app.get_webview_window("drag-overlay") {
         if visible {
             unsafe {
+                // Keep the transparent HWND small and beside the pointer. A full
+                // virtual-screen layered window dims secondary displays and can
+                // make protected video surfaces black while a drag is active.
                 let x = GetSystemMetrics(76); // SM_XVIRTUALSCREEN
                 let y = GetSystemMetrics(77); // SM_YVIRTUALSCREEN
-                let width = GetSystemMetrics(78); // SM_CXVIRTUALSCREEN
-                let height = GetSystemMetrics(79); // SM_CYVIRTUALSCREEN
-                let _ = window.set_position(PhysicalPosition::new(x, y));
-                let _ = window.set_size(PhysicalSize::new(width.max(1) as u32, height.max(1) as u32));
+                let width = GetSystemMetrics(78).max(740); // SM_CXVIRTUALSCREEN
+                let height = GetSystemMetrics(79).max(570); // SM_CYVIRTUALSCREEN
+                let point = cursor.unwrap_or(WinPoint { x: width / 2, y: height / 2 });
+                let left = (point.x - 370).clamp(x, x + width - 740);
+                let top = (point.y - 285).clamp(y, y + height - 570);
+                let _ = window.set_position(PhysicalPosition::new(left, top));
+                let _ = window.set_size(PhysicalSize::new(740, 570));
             }
             let _ = window.show();
         } else { let _ = window.hide(); }
@@ -102,10 +108,10 @@ fn start_desktop_drag_monitor(app: AppHandle) {
                 let start = *origin.get_or_insert(point);
                 let moved = (point.x - start.x).abs() + (point.y - start.y).abs() > 8;
                 if moved && modifier_down && !DESKTOP_DRAG_OVERLAY_ACTIVE.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                    set_drag_overlay(&app, true);
+                    set_drag_overlay(&app, true, Some(point));
                     let _ = app.emit("desktop-drag-session", "start");
                 } else if !modifier_down && DESKTOP_DRAG_OVERLAY_ACTIVE.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                    set_drag_overlay(&app, false);
+                    set_drag_overlay(&app, false, None);
                     let _ = app.emit("desktop-drag-session", "cancel");
                 }
             } else {
@@ -114,7 +120,7 @@ fn start_desktop_drag_monitor(app: AppHandle) {
                     // Let OLE deliver Drop before the topmost overlay is hidden.
                     std::thread::sleep(std::time::Duration::from_millis(180));
                     if DESKTOP_DRAG_OVERLAY_ACTIVE.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                        set_drag_overlay(&app, false);
+                        set_drag_overlay(&app, false, None);
                         let _ = app.emit("desktop-drag-session", "end");
                     }
                 }
@@ -128,7 +134,7 @@ fn start_desktop_drag_monitor(app: AppHandle) {
 async fn complete_desktop_drop(app: AppHandle, paths: Vec<String>, page: Option<String>, action: Option<String>) -> Result<(), String> {
     if paths.is_empty() { return Err("Sürüklenen dosya alınamadı".into()); }
     #[cfg(windows)] DESKTOP_DRAG_OVERLAY_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
-    #[cfg(windows)] set_drag_overlay(&app, false);
+    #[cfg(windows)] set_drag_overlay(&app, false, None);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
@@ -144,20 +150,7 @@ async fn complete_desktop_drop(app: AppHandle, paths: Vec<String>, page: Option<
             }
             return Ok(());
         }
-        app.emit("desktop-action-result", serde_json::json!({"ok":true,"running":true,"message":"Video çarkı işlemi çalışıyor…","outputs":[]})).map_err(|e| e.to_string())?;
-        let mut outputs = Vec::new();
-        let mut failure = None;
-        for input in &paths {
-            match video_wheel_action(&app, input, &action).await {
-                Ok(results) => outputs.extend(results.into_iter().map(|result| result.output)),
-                Err(error) => { failure = Some(error); break; }
-            }
-        }
-        if let Some(error) = failure {
-            app.emit("desktop-action-result", serde_json::json!({"ok":false,"message":error,"outputs":[]})).map_err(|e| e.to_string())?;
-        } else {
-            app.emit("desktop-action-result", serde_json::json!({"ok":true,"message":"Çark işlemi tamamlandı","outputs":outputs})).map_err(|e| e.to_string())?;
-        }
+        app.emit("desktop-video-action-request", serde_json::json!({"paths":paths,"action":action})).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -230,12 +223,105 @@ async fn video_wheel_action(app: &AppHandle, input: &str, action: &str) -> Resul
     Ok(outputs.into_iter().map(|path| JobResult { output: path.to_string_lossy().into_owned(), message: "Video çarkı işlemi tamamlandı".into(), content: None }).collect())
 }
 
+#[tauri::command]
+async fn process_video_action(
+    app: AppHandle, input: String, action: String, output_dir: Option<String>,
+    quality: Option<u8>, preset: Option<String>, start: Option<f64>, duration: Option<f64>,
+    crop_width: Option<u32>, crop_height: Option<u32>, crop_x: Option<u32>, crop_y: Option<u32>,
+    speed: Option<f64>, frame_time: Option<f64>, split_parts: Option<u8>, blur_radius: Option<u8>,
+) -> Result<Vec<JobResult>, String> {
+    let source = PathBuf::from(&input).canonicalize().map_err(|_| "Video dosyası bulunamadı".to_string())?;
+    if !source.is_file() { return Err("Seçilen yol bir dosya değil".into()); }
+    let ext = source.extension().and_then(|v| v.to_str()).unwrap_or("mp4").to_ascii_lowercase();
+    if !["mp4","mkv","mov","webm","avi","m4v"].contains(&ext.as_str()) { return Err("Desteklenmeyen video biçimi".into()); }
+    let folder = if let Some(dir) = output_dir.filter(|s| !s.trim().is_empty()) {
+        let path = PathBuf::from(dir);
+        std::fs::create_dir_all(&path).map_err(|e| format!("Çıktı klasörü oluşturulamadı: {e}"))?;
+        path.canonicalize().map_err(|e| format!("Çıktı klasörü açılamadı: {e}"))?
+    } else { source.parent().ok_or("Kaynak klasörü bulunamadı")?.to_path_buf() };
+    let make_out = |suffix: &str, extension: &str| -> Result<PathBuf, String> {
+        let stem = source.file_stem().and_then(|s| s.to_str()).ok_or("Dosya adı okunamadı")?;
+        let mut output = folder.join(format!("{stem}_{suffix}.{extension}")); let mut i = 1;
+        while output.exists() { output = folder.join(format!("{stem}_{suffix}_{i}.{extension}")); i += 1; }
+        Ok(output)
+    };
+    let mut outputs = Vec::new();
+    let input_path = source.to_string_lossy().into_owned();
+    match action.as_str() {
+        "compress" => {
+            let crf = quality.unwrap_or(26).clamp(16, 35).to_string();
+            let allowed = ["ultrafast","superfast","veryfast","faster","fast","medium","slow","slower"];
+            let speed = preset.as_deref().filter(|p| allowed.contains(p)).unwrap_or("fast");
+            let out = run_video_ffmpeg(&app,&source,&folder,"compressed","mp4",vec!["-c:v".into(),"libx264".into(),"-crf".into(),crf,"-preset".into(),speed.into(),"-c:a".into(),"aac".into(),"-b:a".into(),"128k".into()]).await?; outputs.push(out);
+        }
+        "metadata" => {
+            let out = make_out("metadata-removed", &ext)?;
+            sidecar_capture(&app,"ffmpeg",vec!["-hide_banner".into(),"-y".into(),"-i".into(),input_path,"-map_metadata".into(),"-1".into(),"-c".into(),"copy".into(),out.to_string_lossy().into_owned()]).await?; outputs.push(out);
+        }
+        "mute" => {
+            let out = make_out("muted", &ext)?;
+            sidecar_capture(&app,"ffmpeg",vec!["-hide_banner".into(),"-y".into(),"-i".into(),input_path,"-an".into(),"-c:v".into(),"copy".into(),out.to_string_lossy().into_owned()]).await?; outputs.push(out);
+        }
+        "crop" => {
+            let probe = sidecar_capture(&app,"ffprobe",vec!["-v".into(),"error".into(),"-select_streams".into(),"v:0".into(),"-show_entries".into(),"stream=width,height".into(),"-of".into(),"csv=s=x:p=0".into(),input_path.clone()]).await?;
+            let mut dimensions = probe.0.trim().split('x');
+            let source_width: u32 = dimensions.next().and_then(|s|s.parse().ok()).ok_or("Video genişliği okunamadı")?;
+            let source_height: u32 = dimensions.next().and_then(|s|s.parse().ok()).ok_or("Video yüksekliği okunamadı")?;
+            let w = (crop_width.unwrap_or(1920).clamp(16,7680) & !1).min(source_width & !1);
+            let h = (crop_height.unwrap_or(1080).clamp(16,7680) & !1).min(source_height & !1);
+            let x = crop_x.unwrap_or(0) & !1; let y = crop_y.unwrap_or(0) & !1;
+            if w < 2 || h < 2 || x.saturating_add(w) > source_width || y.saturating_add(h) > source_height { return Err(format!("Kırpma alanı kaynak video sınırlarının dışında ({source_width}×{source_height})")); }
+            let out = run_video_ffmpeg(&app,&source,&folder,"cropped","mp4",vec!["-vf".into(),format!("crop={w}:{h}:{x}:{y}"),"-c:v".into(),"libx264".into(),"-crf".into(),quality.unwrap_or(23).clamp(16,35).to_string(),"-preset".into(),"fast".into(),"-c:a".into(),"aac".into()]).await?; outputs.push(out);
+        }
+        "speed" => {
+            let value = speed.unwrap_or(1.25).clamp(0.25,4.0);
+            let mut remaining = value; let mut filters = Vec::new();
+            while remaining > 2.0 { filters.push("atempo=2.0".to_string()); remaining /= 2.0; }
+            while remaining < 0.5 { filters.push("atempo=0.5".to_string()); remaining /= 0.5; }
+            filters.push(format!("atempo={remaining:.3}"));
+            let out = run_video_ffmpeg(&app,&source,&folder,"speed","mp4",vec!["-vf".into(),format!("setpts={:.6}*PTS",1.0/value),"-af".into(),filters.join(","),"-c:v".into(),"libx264".into(),"-crf".into(),quality.unwrap_or(23).clamp(16,35).to_string(),"-preset".into(),"fast".into(),"-c:a".into(),"aac".into()]).await?; outputs.push(out);
+        }
+        "screenshot" => {
+            let at = frame_time.unwrap_or(1.0).max(0.0).to_string(); let out = make_out("frame", "png")?;
+            sidecar_capture(&app,"ffmpeg",vec!["-hide_banner".into(),"-y".into(),"-ss".into(),at,"-i".into(),input_path,"-frames:v".into(),"1".into(),out.to_string_lossy().into_owned()]).await?; outputs.push(out);
+        }
+        "split" => {
+            let probe = sidecar_capture(&app,"ffprobe",vec!["-v".into(),"error".into(),"-show_entries".into(),"format=duration".into(),"-of".into(),"default=noprint_wrappers=1:nokey=1".into(),input_path.clone()]).await?;
+            let total: f64 = probe.0.parse().map_err(|_| "Video süresi okunamadı".to_string())?;
+            let parts = split_parts.unwrap_or(2).clamp(2,20); let chunk = total / parts as f64;
+            for i in 0..parts { let out = make_out(&format!("part-{:02}",i+1),"mp4")?;
+                sidecar_capture(&app,"ffmpeg",vec!["-hide_banner".into(),"-y".into(),"-ss".into(),format!("{:.3}",i as f64*chunk),"-i".into(),input_path.clone(),"-t".into(),format!("{:.3}",if i+1==parts { total-i as f64*chunk } else { chunk }),"-c:v".into(),"libx264".into(),"-crf".into(),quality.unwrap_or(23).clamp(16,35).to_string(),"-preset".into(),"fast".into(),"-c:a".into(),"aac".into(),out.to_string_lossy().into_owned()]).await?; outputs.push(out); }
+        }
+        "trim" => {
+            let from = start.unwrap_or(0.0).max(0.0); let length = duration.unwrap_or(30.0).clamp(0.1,86400.0);
+            let out = make_out("trimmed", "mp4")?;
+            sidecar_capture(&app,"ffmpeg",vec!["-hide_banner".into(),"-y".into(),"-ss".into(),format!("{from:.3}"),"-i".into(),input_path,"-t".into(),format!("{length:.3}"),"-c:v".into(),"libx264".into(),"-crf".into(),quality.unwrap_or(23).clamp(16,35).to_string(),"-preset".into(),"fast".into(),"-c:a".into(),"aac".into(),out.to_string_lossy().into_owned()]).await?; outputs.push(out);
+        }
+        "blur" => {
+            let radius = blur_radius.unwrap_or(10).clamp(1,30).to_string();
+            let out = run_video_ffmpeg(&app,&source,&folder,"blurred","mp4",vec!["-vf".into(),format!("boxblur={radius}:1"),"-c:v".into(),"libx264".into(),"-crf".into(),quality.unwrap_or(23).clamp(16,35).to_string(),"-preset".into(),"fast".into(),"-c:a".into(),"aac".into()]).await?; outputs.push(out);
+        }
+        _ => return Err("Video işlemi tanınmıyor".into()),
+    }
+    Ok(outputs.into_iter().map(|path| JobResult { output: path.to_string_lossy().into_owned(), message: "Video işlemi tamamlandı".into(), content: None }).collect())
+}
+
 fn safe_output(input: &Path, suffix: &str, ext: &str) -> Result<PathBuf, String> {
     let stem = input.file_stem().and_then(|s| s.to_str()).ok_or("Dosya adı okunamadı")?;
     let parent = input.parent().ok_or("Kaynak klasörü bulunamadı")?;
     let mut output = parent.join(format!("{stem}_{suffix}.{ext}"));
     let mut n = 1;
     while output.exists() { output = parent.join(format!("{stem}_{suffix}_{n}.{ext}")); n += 1; }
+    Ok(output)
+}
+
+async fn run_video_ffmpeg(app: &AppHandle, source: &Path, folder: &Path, suffix: &str, ext: &str, args: Vec<String>) -> Result<PathBuf, String> {
+    let stem = source.file_stem().and_then(|s| s.to_str()).ok_or("Dosya adı okunamadı")?;
+    let mut output = folder.join(format!("{stem}_{suffix}.{ext}")); let mut index = 1;
+    while output.exists() { output = folder.join(format!("{stem}_{suffix}_{index}.{ext}")); index += 1; }
+    let mut command = vec!["-hide_banner".into(), "-y".into(), "-i".into(), source.to_string_lossy().into_owned()];
+    command.extend(args); command.extend(["-movflags".into(), "+faststart".into()]); command.push(output.to_string_lossy().into_owned());
+    sidecar_capture(app,"ffmpeg",command).await?;
     Ok(output)
 }
 
@@ -480,6 +566,6 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![app_info, drop_modifiers, complete_desktop_drop, convert_media, trim_video_silence, process_images, transcribe_media, transcribe_url, download_video, download_captions, probe_media])
+        .invoke_handler(tauri::generate_handler![app_info, drop_modifiers, complete_desktop_drop, process_video_action, convert_media, trim_video_silence, process_images, transcribe_media, transcribe_url, download_video, download_captions, probe_media])
         .run(tauri::generate_context!()).expect("Tamarillo başlatılamadı");
 }

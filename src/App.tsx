@@ -10,6 +10,8 @@ import { getAppInfo, type AppInfo } from './lib/tauri';
 type Page = 'home' | 'media' | 'download' | 'transcript' | 'images' | 'notes' | 'timer' | 'library' | 'settings';
 type Result = { output: string; message: string; content?: string };
 type DropModifierState = { shift: boolean; control: boolean; alt: boolean };
+type VideoAction = 'compress'|'metadata'|'mute'|'crop'|'speed'|'screenshot'|'split'|'blur'|'trim';
+type VideoDialog = { action: VideoAction; paths: string[] };
 const COPYRIGHT = 'Copyright EgeHS Medya 2026 - 2027';
 const nav: { id: Page; label: string; icon: typeof Clapperboard }[] = [
   { id: 'home', label: 'Genel Bakış', icon: Clapperboard }, { id: 'media', label: 'Medya dönüştür', icon: FileVideo },
@@ -49,6 +51,15 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [outputs, setOutputs] = useState<string[]>([]);
+  const [videoDialog, setVideoDialog] = useState<VideoDialog|null>(null);
+  const [videoOutputDir, setVideoOutputDir] = useState('');
+  const [videoQuality, setVideoQuality] = useState(23);
+  const [videoPreset, setVideoPreset] = useState('fast');
+  const [cropWidth, setCropWidth] = useState(1920); const [cropHeight, setCropHeight] = useState(1080);
+  const [cropX, setCropX] = useState(0); const [cropY, setCropY] = useState(0);
+  const [videoSpeed, setVideoSpeed] = useState(1.25); const [frameTime, setFrameTime] = useState(1);
+  const [splitParts, setSplitParts] = useState(2); const [blurRadius, setBlurRadius] = useState(10);
+  const [trimStart, setTrimStart] = useState(0); const [trimDuration, setTrimDuration] = useState(30);
   const [dragging, setDragging] = useState(false);
   const dragMode = useRef<'tools'|'convert'|'file'|null>(null);
   const [menu, setMenu] = useState<'tools'|'convert'|'file'|null>(null);
@@ -127,6 +138,21 @@ export default function App() {
     try { const results = await invoke<Result[]>('process_images', { inputs: files, action: imgAction, width: Number(imgWidth), height: Number(imgHeight), format: imgFormat, quality: Number(imgQuality), watermark: watermark || null }); const paths = results.map(r => r.output); remember(paths); setMessage(`${paths.length} görsel hazırlandı`); }
     catch (error) { setMessage(String(error)); } finally { setBusy(false); }
   };
+  const runVideoAction = async () => {
+    if (!videoDialog?.paths.length) return;
+    setBusy(true); setMessage('Video işleniyor…'); const done: string[] = [];
+    try {
+      for (const input of videoDialog.paths) {
+        const result = await invoke<Result[]>('process_video_action', {
+          input, action: videoDialog.action, outputDir: videoOutputDir || null,
+          quality: videoQuality, preset: videoPreset, start: trimStart, duration: trimDuration,
+          cropWidth, cropHeight, cropX, cropY, speed: videoSpeed, frameTime, splitParts, blurRadius,
+        });
+        done.push(...result.map(item => item.output));
+      }
+      remember(done); setMessage(`${done.length} çıktı oluşturuldu`); setVideoDialog(null);
+    } catch (error) { setMessage(String(error)); } finally { setBusy(false); }
+  };
   const generateHooks = () => {
     const subject = topic.trim() || 'bu konu';
     setHooks([`${subject} hakkında çoğu kişinin yanlış bildiği şey şu…`, `Bu ${subject} hatası sana düşündüğünden daha pahalıya patlıyor.`, `${subject} için keşke daha önce bilseydim dediğim 3 şey.`, `30 saniyede ${subject} konusundaki en önemli noktayı anlatıyorum.`, `Herkes ${subject} yapıyor ama şu detayı atlıyor.`]);
@@ -197,7 +223,23 @@ export default function App() {
       setBusy(Boolean(event.payload.running)); setMessage(event.payload.message); setOutputs(event.payload.outputs ?? []);
       if (event.payload.outputs?.length) setLibrary(current => { const next = [...event.payload.outputs, ...current].filter((value,index,array)=>array.indexOf(value)===index).slice(0,30); localStorage.setItem('tamarillo-history',JSON.stringify(next)); return next; });
     }).then(fn => { unlistenResult = fn; });
-    return () => { unlisten?.(); unlistenResult?.(); };
+    let unlistenVideo: (()=>void)|undefined;
+    listen<{paths:string[];action:VideoAction}>('desktop-video-action-request', event => {
+      setFiles(event.payload.paths); setPage('media'); setMenu(null); setVideoOutputDir(''); setMessage(''); setOutputs([]);
+      setVideoDialog({ paths:event.payload.paths, action:event.payload.action });
+      setVideoQuality(23); setVideoPreset('fast'); setFrameTime(1); setSplitParts(2); setBlurRadius(10);
+      setCropWidth(1920); setCropHeight(1080); setCropX(0); setCropY(0); setVideoSpeed(1.25); setTrimStart(0); setTrimDuration(30);
+      const first = event.payload.paths[0];
+      if (first) void invoke<string>('probe_media',{input:first}).then(info=>{
+        const width = Number(info.match(/width=(\d+)/)?.[1]); const height = Number(info.match(/height=(\d+)/)?.[1]);
+        if (!width || !height) return;
+        const targetRatio = 16/9; let w=width, h=height;
+        if (width/height > targetRatio) w=Math.floor(height*targetRatio/2)*2;
+        else h=Math.floor(width/targetRatio/2)*2;
+        setCropWidth(w); setCropHeight(h); setCropX(Math.floor((width-w)/2/2)*2); setCropY(Math.floor((height-h)/2/2)*2);
+      }).catch(()=>undefined);
+    }).then(fn => { unlistenVideo = fn; });
+    return () => { unlisten?.(); unlistenResult?.(); unlistenVideo?.(); };
   }, []);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
@@ -230,7 +272,7 @@ export default function App() {
       {page==='home' && <>
         <section className="hero"><div className="eyebrow"><Sparkles size={14}/> ÜRETİMİN İÇİN TEK NOKTA</div><h1>Fikirden yayına,<br/><em>işin daha akıcı.</em></h1><p>Dosyayı bırak, aracını seç, işine devam et. Dosyaların bilgisayarında işlenir.</p></section>
         <section className="quick"><div className="section-head"><div><h2>Hızlı işlem</h2><p>Dosya ekle veya bir video bağlantısı yapıştır</p></div><button className="key-hint" onClick={()=>setMenu('tools')}><Command size={13}/> Ctrl + Space</button></div>
-          <div className={`drop-card ${dragging?'dragging':''}`} onClick={()=>!files.length&&void chooseFiles()}><div className="upload-icon"><Upload size={20}/></div><div className="drop-copy"><b>{files.length?`${files.length} dosya seçildi`:'Dosyaları buraya bırak'}</b><span>{files.length?files.map(path=>path.split(/[\\/]/).pop()).slice(0,3).join(', '):'Shift: dönüştür · Ctrl: araçlar · Alt: dosya işlemleri'}</span></div><button className="browse" onClick={e=>{e.stopPropagation();void chooseFiles();}}>Dosya seç</button></div>
+          <div className={`drop-card ${dragging?'dragging':''}`} onClick={()=>!files.length&&void chooseFiles()}><div className="upload-icon"><Upload size={20}/></div><div className="drop-copy"><b>{files.length?`${files.length} dosya seçildi`:'Dosyaları buraya bırak'}</b><span>{files.length?files.map(path=>path.split(/[\\/]/).pop()).slice(0,3).join(', '):'Shift: dönüştür · Alt: araçlar · Ctrl: pencere yerleşimi'}</span></div><button className="browse" onClick={e=>{e.stopPropagation();void chooseFiles();}}>Dosya seç</button></div>
           <div className="url-row"><div className="url-icon"><Link2 size={17}/></div><input value={url} onChange={e=>setUrl(e.target.value)} onKeyDown={e=>e.key==='Enter'&&void runDownload()} placeholder="YouTube veya desteklenen video bağlantısını yapıştır"/><select value={downloadFormat} onChange={e=>setDownloadFormat(e.target.value as 'video'|'mp3')}><option value="video">En iyi video</option><option value="mp3">MP3 ses</option></select><button className="primary" disabled={!url.trim()||busy} onClick={()=>void runDownload()}><Download size={15}/> İndir</button></div>
           {files.length>0&&<div className="conversion-actions"><span>Hızlı dönüştür:</span><button disabled={busy} onClick={()=>void runMedia('compress')}>MP4 sıkıştır</button><button disabled={busy} onClick={()=>void runMedia('mp3')}>MP3 çıkar</button><button disabled={busy} onClick={()=>void runMedia('wav')}>WAV çıkar</button><button disabled={busy} onClick={()=>void runMedia('mp4')}>MP4 dönüştür</button></div>}
           {message&&<Status busy={busy} message={message} outputs={outputs}/>}</section>
@@ -251,15 +293,30 @@ export default function App() {
 
       {page==='library'&&<><PageIntro eyebrow="BU CİHAZDA" title="Son işlemler" detail="Son çıktılarının klasör yolları bu bilgisayarda saklanır."/>{library.length===0?<div className="empty-state">Henüz tamamlanan bir işlem yok.</div>:<div className="panel history-list">{library.map((path,i)=><div className="history-item" key={`${path}-${i}`}><FileVideo size={17}/><span>{path}</span><button className="icon-button" onClick={()=>void navigator.clipboard.writeText(path)}>Yolu kopyala</button></div>)}</div>}</>}
 
-      {page==='settings'&&<><PageIntro eyebrow="TERCİHLER" title="Ayarlar" detail="Tamarillo’nun Windows kısayolları ve çalışma şekli."/><div className="panel"><h2>Windows kısayolları</h2><ShortcutTable/><div className="split-row"><div><h3>Genel kısayol</h3><p className="muted">Uygulama arka plandayken panodaki bağlantıyı Tamarillo’ya getirir.</p></div><kbd>Ctrl + Shift + D</kbd></div><p className="muted small">Explorer’da dosyayı tutup masaüstünde sürüklerken Shift dönüştürme, Alt araç, Ctrl dosya işlemleri çarkını açar. Çarktaki seçeneğin üzerine bırak.</p><div className="setting-row"><span>Görünüm</span><span className="pill">Koyu tema</span></div><div className="setting-row"><span>Uygulama</span><b>{info.name}</b></div><div className="setting-row"><span>Telif</span><b>{info.copyright}</b></div></div></>}
+      {page==='settings'&&<><PageIntro eyebrow="TERCİHLER" title="Ayarlar" detail="Tamarillo’nun Windows kısayolları ve çalışma şekli."/><div className="panel"><h2>Windows kısayolları</h2><ShortcutTable/><div className="split-row"><div><h3>Genel kısayol</h3><p className="muted">Uygulama arka plandayken panodaki bağlantıyı Tamarillo’ya getirir.</p></div><kbd>Ctrl + Shift + D</kbd></div><p className="muted small">Explorer’da dosyayı sürüklerken Shift dönüştürme, Alt araçlar, Ctrl pencere yerleşimi çarkını açar. Video işlemini seçince ayrıntılı ayar penceresi açılır.</p><div className="setting-row"><span>Görünüm</span><span className="pill">Koyu tema</span></div><div className="setting-row"><span>Uygulama</span><b>{info.name}</b></div><div className="setting-row"><span>Telif</span><b>{info.copyright}</b></div></div></>}
 
       <footer>{info.copyright}<span>•</span> Windows masaüstü sürümü</footer>
     </main>
-    {menu&&<div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&setMenu(null)}><div className="wheel-modal"><div className="modal-head"><div><small>HIZLI ERİŞİM · WINDOWS</small><h2>{menu==='tools'?'Bir araç seç':menu==='convert'?'Dönüştürme çarkı':'Dosya işlemi seç'}</h2></div><button className="icon-button" onClick={()=>setMenu(null)}><X size={18}/></button></div>{menu==='tools'&&<div className="search-box"><Search size={16}/><input ref={searchRef} value={search} onChange={e=>setSearch(e.target.value)} placeholder="Araçlarda ara…"/><kbd>Ctrl F</kbd></div>}<div className="wheel-grid"><div className="wheel-core"><span>t</span><small>TAMARILLO</small></div>{wheelItems.map(({page:p,title:label,text,icon:Icon,shortcut},index)=>{const angle=(360*index/Math.max(wheelItems.length,1))-90;return <button key={label} style={{'--angle':`${angle}deg`,'--reverse-angle':`${-angle}deg`} as CSSProperties} onClick={()=>openPage(p)}><span className="tool-icon"><Icon size={18}/></span><span><b>{label}</b><small>{text}</small></span><kbd>{shortcut}</kbd></button>;})}</div><div className="modal-foot">↑ ↓ seç · Enter aç · Esc kapat <span>Ctrl + O dosya seç</span></div></div></div>}
+      {menu&&<div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&setMenu(null)}><div className="wheel-modal"><div className="modal-head"><div><small>HIZLI ERİŞİM · WINDOWS</small><h2>{menu==='tools'?'Bir araç seç':menu==='convert'?'Dönüştürme çarkı':'Dosya işlemi seç'}</h2></div><button className="icon-button" onClick={()=>setMenu(null)}><X size={18}/></button></div>{menu==='tools'&&<div className="search-box"><Search size={16}/><input ref={searchRef} value={search} onChange={e=>setSearch(e.target.value)} placeholder="Araçlarda ara…"/><kbd>Ctrl F</kbd></div>}<div className="wheel-grid"><div className="wheel-core"><span>t</span><small>TAMARILLO</small></div>{wheelItems.map(({page:p,title:label,text,icon:Icon,shortcut},index)=>{const angle=(360*index/Math.max(wheelItems.length,1))-90;return <button key={label} style={{'--angle':`${angle}deg`,'--reverse-angle':`${-angle}deg`} as CSSProperties} onClick={()=>openPage(p)}><span className="tool-icon"><Icon size={18}/></span><span><b>{label}</b><small>{text}</small></span><kbd>{shortcut}</kbd></button>;})}</div><div className="modal-foot">↑ ↓ seç · Enter aç · Esc kapat <span>Ctrl + O dosya seç</span></div></div></div>}
+      {videoDialog&&<div className="modal-backdrop video-action-backdrop"><div className="video-action-window" role="dialog" aria-modal="true"><div className="modal-head"><div><small>VİDEO İŞLEMİ · FFmpeg</small><h2>{videoActionLabel(videoDialog.action)}</h2><p className="muted">{videoDialog.paths.length} video seçildi · Ayarlarını yap, sonra yeni kopya oluştur.</p></div><button className="icon-button" onClick={()=>!busy&&setVideoDialog(null)}><X size={18}/></button></div>
+        <div className="video-source-list">{videoDialog.paths.map(path=><div key={path}><FileVideo size={15}/><span>{path.split(/[\\/]/).pop()}</span></div>)}</div>
+        {videoDialog.action==='compress'&&<><label className="field-label">Kalite · CRF {videoQuality} <span className="muted">(küçük sayı daha yüksek kalite)</span></label><input className="video-range" type="range" min="16" max="35" value={videoQuality} onChange={e=>setVideoQuality(Number(e.target.value))}/><label className="field-label">Kodlama hızı</label><select className="video-select" value={videoPreset} onChange={e=>setVideoPreset(e.target.value)}>{['ultrafast','superfast','veryfast','faster','fast','medium','slow','slower'].map(v=><option key={v}>{v}</option>)}</select></>}
+        {videoDialog.action==='crop'&&<><p className="muted">Çıktı kırpma boyutu ve kaynak kare içindeki başlangıç koordinatlarını ayarla (piksel).</p><div className="form-row"><label>Genişlik <input className="number-input" type="number" min="16" value={cropWidth} onChange={e=>setCropWidth(Number(e.target.value))}/></label><label>Yükseklik <input className="number-input" type="number" min="16" value={cropHeight} onChange={e=>setCropHeight(Number(e.target.value))}/></label></div><div className="form-row"><label>Sol X <input className="number-input" type="number" min="0" value={cropX} onChange={e=>setCropX(Number(e.target.value))}/></label><label>Üst Y <input className="number-input" type="number" min="0" value={cropY} onChange={e=>setCropY(Number(e.target.value))}/></label></div><p className="muted small">Video görüntü boyutunu öğrenmek için Medya bölümünde ffprobe bilgisi kullanılabilir; çerçeve dışına taşan değerlerde FFmpeg hata verir.</p></>}
+        {videoDialog.action==='speed'&&<><label className="field-label">Oynatma hızı: {videoSpeed.toFixed(2)}×</label><input className="video-range" type="range" min="0.25" max="4" step="0.05" value={videoSpeed} onChange={e=>setVideoSpeed(Number(e.target.value))}/><p className="muted">Ses hızı da videoyla eşleşecek şekilde ayarlanır.</p></>}
+        {videoDialog.action==='screenshot'&&<><label className="field-label">Kare alınacak zaman (saniye)</label><input className="number-input" type="number" min="0" step="0.1" value={frameTime} onChange={e=>setFrameTime(Number(e.target.value))}/></>}
+        {videoDialog.action==='split'&&<><label className="field-label">Kaç parçaya bölünsün?</label><input className="number-input" type="number" min="2" max="20" value={splitParts} onChange={e=>setSplitParts(Number(e.target.value))}/><p className="muted">Parçalar eşit süreli olacak ve ayrı MP4 dosyaları oluşturulacak.</p></>}
+        {videoDialog.action==='blur'&&<><label className="field-label">Bulanıklık gücü: {blurRadius}</label><input className="video-range" type="range" min="1" max="30" value={blurRadius} onChange={e=>setBlurRadius(Number(e.target.value))}/></>}
+        {videoDialog.action==='trim'&&<div className="form-row"><label>Başlangıç (sn) <input className="number-input" type="number" min="0" step="0.1" value={trimStart} onChange={e=>setTrimStart(Number(e.target.value))}/></label><label>Süre (sn) <input className="number-input" type="number" min="0.1" step="0.1" value={trimDuration} onChange={e=>setTrimDuration(Number(e.target.value))}/></label></div>}
+        {(videoDialog.action==='metadata'||videoDialog.action==='mute')&&<p className="muted">{videoDialog.action==='metadata'?'Video akışlarını kopyalayıp dosya metadata alanlarını kaldırır.':'Görüntüyü korur ve tüm ses akışlarını kaldırır.'} Kaynak dosyan korunur; yeni bir dosya oluşturulur.</p>}
+        {videoDialog.action!=='metadata'&&videoDialog.action!=='mute'&&videoDialog.action!=='screenshot'&&videoDialog.action!=='split'&&<><label className="field-label">Video kalitesi · CRF {videoQuality}</label><input className="video-range" type="range" min="16" max="35" value={videoQuality} onChange={e=>setVideoQuality(Number(e.target.value))}/></>}
+        <div className="video-output-row"><div><b>Çıktı klasörü</b><span>{videoOutputDir||'Kaynak video klasörü'}</span></div><button className="browse" onClick={async()=>{const dir=await open({directory:true,multiple:false});if(typeof dir==='string')setVideoOutputDir(dir);}}>Klasör seç</button></div>
+        {message&&<Status busy={busy} message={message} outputs={outputs}/>}<div className="button-row video-dialog-actions"><button className="browse" disabled={busy} onClick={()=>setVideoDialog(null)}>Vazgeç</button><button className="primary" disabled={busy} onClick={()=>void runVideoAction()}>{busy?<LoaderCircle size={14} className="spin"/>:<WandSparkles size={15}/>} İşlemi başlat</button></div>
+      </div></div>}
   </div>;
 }
 
+function videoActionLabel(action:VideoAction) { return ({compress:'Videoyu sıkıştır',metadata:'Metadata kaldır',mute:'Sesi kaldır',crop:'Videoyu kırp',speed:'Oynatma hızını değiştir',screenshot:'Videodan kare al',split:'Videoyu parçalara böl',blur:'Videoyu bulanıklaştır',trim:'Video bölümünü kes'} as const)[action]; }
 function Status({busy,message,outputs}:{busy:boolean;message:string;outputs:string[]}) { const failed=!busy&&/çalıştırılamadı|açılamadı|başarısız|bulunamadı|hata verdi|boş döndü|okunamadı|indirilemedi/i.test(message); return <div className={`job-message ${failed?'failed':''}`}>{busy?<LoaderCircle size={14} className="spin"/>:failed?<X size={14}/>:<Check size={14}/>}<span>{message}</span>{outputs.length>0&&<div className="output-list">{outputs.slice(0,8).map(path=><code key={path}>{path}</code>)}</div>}</div>; }
 function PageIntro({eyebrow,title,detail}:{eyebrow:string;title:string;detail:string}) { return <section className="page-intro"><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{detail}</p></section>; }
 function FileDrop({files,dragging,onChoose,onClear}:{files:string[];dragging:boolean;onChoose:()=>void;onClear:()=>void}) { return <div className={`drop-card file-drop ${dragging?'dragging':''}`}><div className="upload-icon"><Upload size={20}/></div><div className="drop-copy"><b>{files.length?`${files.length} dosya seçildi`:'Dosyaları buraya bırak'}</b><span>{files.length?files.map(f=>f.split(/[\\/]/).pop()).slice(0,4).join(', '):'Birden fazla dosya seçebilirsin'}</span></div><button className="browse" onClick={onChoose}>Dosya seç</button>{files.length>0&&<button className="icon-button" onClick={onClear}><X size={16}/></button>}</div>; }
-function ShortcutTable() { const rows=[['Shift + sürükleme','Dönüştürme çarkı'],['Alt + sürükleme','Araç çarkı'],['Ctrl + sürükleme','Dosya işlemleri çarkı'],['Ctrl + Shift + D','Panodaki bağlantıyı getir (genel kısayol)'],['Ctrl + O','Dosya seç'],['Ctrl + Space','Araç çarkını aç'],['Ctrl + 2','Son işlemleri aç'],['Ctrl + F','Araçları ara'],['↑ / ↓ / ← / →','Çarkta araç seç'],['Home / End','İlk / son araca git'],['Enter / Space','Seçili aracı aç'],['Esc / Tab','Çarkı kapat']];return <div className="shortcut-table">{rows.map(([key,action])=><div key={key+action}><kbd>{key}</kbd><span>{action}</span></div>)}</div>; }
+function ShortcutTable() { const rows=[['Shift + sürükleme','Dönüştürme çarkı'],['Alt + sürükleme','Araç/video çarkı'],['Ctrl + sürükleme','Pencere yerleşimi çarkı'],['Ctrl + Shift + D','Panodaki bağlantıyı getir (genel kısayol)'],['Ctrl + O','Dosya seç'],['Ctrl + Space','Araç çarkını aç'],['Ctrl + 2','Son işlemleri aç'],['Ctrl + F','Araçları ara'],['↑ / ↓ / ← / →','Çarkta araç seç'],['Home / End','İlk / son araca git'],['Enter / Space','Seçili aracı aç'],['Esc / Tab','Çarkı kapat']];return <div className="shortcut-table">{rows.map(([key,action])=><div key={key+action}><kbd>{key}</kbd><span>{action}</span></div>)}</div>; }
