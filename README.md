@@ -24,6 +24,10 @@ Dosyalar varsayılan olarak yerelde işlenir. Video/ses ve görsel çıktıları
 | `Ctrl + O` | Dosya seç |
 | `Ctrl + F` | Araçlarda ara |
 | `Ctrl + 2` | Son işlemler |
+| `↑ / ↓ / ← / →` | Çarkta araç seç |
+| `Home / End` | İlk / son araca git |
+| `Enter / Space` | Seçili aracı aç |
+| `Esc / Tab` | Çarkı kapat |
 | `Shift` + dosya bırakma | Dönüştürme çarkı |
 | `Ctrl` + dosya bırakma | Araç çarkı |
 | `Alt` + dosya bırakma | Dosya işlemleri |
