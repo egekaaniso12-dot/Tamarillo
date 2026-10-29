@@ -187,13 +187,17 @@ export default function App() {
     return () => { unlisten?.(); };
   }, []);
   useEffect(() => {
-    let unlisten: (()=>void)|undefined;
+    let unlisten: (()=>void)|undefined; let unlistenResult: (()=>void)|undefined;
     listen<{paths:string[];page:string|null}>('desktop-file-dropped', event => {
       setFiles(event.payload.paths); setOutputs([]); setMessage(`${event.payload.paths.length} dosya hazır`);
       const target = nav.find(item => item.id === event.payload.page);
       setPage(target?.id ?? 'home'); setMenu(null);
     }).then(fn => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    listen<{ok:boolean;running?:boolean;message:string;outputs:string[]}>('desktop-action-result', event => {
+      setBusy(Boolean(event.payload.running)); setMessage(event.payload.message); setOutputs(event.payload.outputs ?? []);
+      if (event.payload.outputs?.length) setLibrary(current => { const next = [...event.payload.outputs, ...current].filter((value,index,array)=>array.indexOf(value)===index).slice(0,30); localStorage.setItem('tamarillo-history',JSON.stringify(next)); return next; });
+    }).then(fn => { unlistenResult = fn; });
+    return () => { unlisten?.(); unlistenResult?.(); };
   }, []);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {

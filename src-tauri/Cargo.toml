@@ -1,6 +1,6 @@
 [package]
 name = "tamarillo"
-version = "0.1.3"
+version = "0.1.4"
 description = "Tamarillo Creator Utility"
 authors = ["EgeHS Medya"]
 edition = "2021"

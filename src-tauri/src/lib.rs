@@ -67,6 +67,29 @@ fn set_drag_overlay(app: &AppHandle, visible: bool) {
 }
 
 #[cfg(windows)]
+fn arrange_main_window(app: &AppHandle, layout: &str) -> Result<(), String> {
+    let width = unsafe { GetSystemMetrics(0).max(1) } as u32;
+    let height = unsafe { GetSystemMetrics(1).max(1) } as u32;
+    let third = width / 3;
+    let (x, w) = match layout {
+        "left-third" => (0, third),
+        "middle-third" => (third as i32, third),
+        "right-third" => ((third * 2) as i32, width - third * 2),
+        "left-half" => (0, width / 2),
+        "right-half" => ((width / 2) as i32, width - width / 2),
+        "left-two-thirds" => (0, width * 2 / 3),
+        "right-two-thirds" => ((width / 3) as i32, width - width / 3),
+        _ => return Err("Pencere yerleşimi tanınmıyor".into()),
+    };
+    let window = app.get_webview_window("main").ok_or("Tamarillo ana penceresi bulunamadı")?;
+    window.set_position(PhysicalPosition::new(x, 0)).map_err(|e| e.to_string())?;
+    window.set_size(PhysicalSize::new(w.max(1), height)).map_err(|e| e.to_string())?;
+    let _ = window.show();
+    let _ = window.set_focus();
+    Ok(())
+}
+
+#[cfg(windows)]
 fn start_desktop_drag_monitor(app: AppHandle) {
     std::thread::spawn(move || {
         let mut origin: Option<WinPoint> = None;
@@ -102,7 +125,7 @@ fn start_desktop_drag_monitor(app: AppHandle) {
 }
 
 #[tauri::command]
-fn complete_desktop_drop(app: AppHandle, paths: Vec<String>, page: Option<String>) -> Result<(), String> {
+async fn complete_desktop_drop(app: AppHandle, paths: Vec<String>, page: Option<String>, action: Option<String>) -> Result<(), String> {
     if paths.is_empty() { return Err("Sürüklenen dosya alınamadı".into()); }
     #[cfg(windows)] DESKTOP_DRAG_OVERLAY_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
     #[cfg(windows)] set_drag_overlay(&app, false);
@@ -110,7 +133,101 @@ fn complete_desktop_drop(app: AppHandle, paths: Vec<String>, page: Option<String
         let _ = window.show();
         let _ = window.set_focus();
     }
-    app.emit("desktop-file-dropped", serde_json::json!({"paths": paths, "page": page})).map_err(|e| e.to_string())
+    app.emit("desktop-file-dropped", serde_json::json!({"paths": paths, "page": page})).map_err(|e| e.to_string())?;
+    if let Some(action) = action {
+        if let Some(layout) = action.strip_prefix("layout:") {
+            #[cfg(windows)] let result = arrange_main_window(&app, layout);
+            #[cfg(not(windows))] let result: Result<(), String> = Err("Pencere yerleşimi yalnızca Windows masaüstünde kullanılabilir".into());
+            match result {
+                Ok(()) => { app.emit("desktop-action-result", serde_json::json!({"ok":true,"message":"Pencere yerleşimi uygulandı","outputs":[]})).map_err(|e| e.to_string())?; }
+                Err(error) => { app.emit("desktop-action-result", serde_json::json!({"ok":false,"message":error,"outputs":[]})).map_err(|e| e.to_string())?; }
+            }
+            return Ok(());
+        }
+        app.emit("desktop-action-result", serde_json::json!({"ok":true,"running":true,"message":"Video çarkı işlemi çalışıyor…","outputs":[]})).map_err(|e| e.to_string())?;
+        let mut outputs = Vec::new();
+        let mut failure = None;
+        for input in &paths {
+            match video_wheel_action(&app, input, &action).await {
+                Ok(results) => outputs.extend(results.into_iter().map(|result| result.output)),
+                Err(error) => { failure = Some(error); break; }
+            }
+        }
+        if let Some(error) = failure {
+            app.emit("desktop-action-result", serde_json::json!({"ok":false,"message":error,"outputs":[]})).map_err(|e| e.to_string())?;
+        } else {
+            app.emit("desktop-action-result", serde_json::json!({"ok":true,"message":"Çark işlemi tamamlandı","outputs":outputs})).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+async fn video_wheel_action(app: &AppHandle, input: &str, action: &str) -> Result<Vec<JobResult>, String> {
+    let source = PathBuf::from(input).canonicalize().map_err(|_| format!("Video bulunamadı: {input}"))?;
+    if !source.is_file() { return Err("Seçilen yol bir dosya değil".into()); }
+    let ext = source.extension().and_then(|value| value.to_str()).unwrap_or("mp4").to_ascii_lowercase();
+    if !["mp4","mkv","mov","webm","avi","m4v"].contains(&ext.as_str()) { return Err("Video çarkı yalnızca video dosyalarında çalışır".into()); }
+    let mut outputs = Vec::new();
+    match action {
+        "compress" => {
+            let out = safe_output(&source, "compressed", "mp4")?;
+            sidecar_capture(app, "ffmpeg", vec!["-hide_banner".into(),"-y".into(),"-i".into(),source.to_string_lossy().into_owned(),"-c:v".into(),"libx264".into(),"-crf".into(),"26".into(),"-preset".into(),"fast".into(),"-c:a".into(),"aac".into(),"-b:a".into(),"128k".into(),out.to_string_lossy().into_owned()]).await?;
+            outputs.push(out);
+        }
+        "metadata" => {
+            let out = safe_output(&source, "metadata-removed", &ext)?;
+            sidecar_capture(app, "ffmpeg", vec!["-hide_banner".into(),"-y".into(),"-i".into(),source.to_string_lossy().into_owned(),"-map_metadata".into(),"-1".into(),"-c".into(),"copy".into(),out.to_string_lossy().into_owned()]).await?;
+            outputs.push(out);
+        }
+        "mute" => {
+            let out = safe_output(&source, "muted", &ext)?;
+            sidecar_capture(app, "ffmpeg", vec!["-hide_banner".into(),"-y".into(),"-i".into(),source.to_string_lossy().into_owned(),"-an".into(),"-c:v".into(),"copy".into(),out.to_string_lossy().into_owned()]).await?;
+            outputs.push(out);
+        }
+        "crop" => {
+            let out = safe_output(&source, "crop-16x9", "mp4")?;
+            sidecar_capture(app, "ffmpeg", vec!["-hide_banner".into(),"-y".into(),"-i".into(),source.to_string_lossy().into_owned(),"-vf".into(),"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080".into(),"-c:v".into(),"libx264".into(),"-crf".into(),"23".into(),"-c:a".into(),"aac".into(),out.to_string_lossy().into_owned()]).await?;
+            outputs.push(out);
+        }
+        "speed" => {
+            let out = safe_output(&source, "speed-125", "mp4")?;
+            sidecar_capture(app, "ffmpeg", vec!["-hide_banner".into(),"-y".into(),"-i".into(),source.to_string_lossy().into_owned(),"-vf".into(),"setpts=0.8*PTS".into(),"-af".into(),"atempo=1.25".into(),"-c:v".into(),"libx264".into(),"-crf".into(),"23".into(),"-c:a".into(),"aac".into(),out.to_string_lossy().into_owned()]).await?;
+            outputs.push(out);
+        }
+        "screenshot" => {
+            let out = safe_output(&source, "frame-1s", "png")?;
+            sidecar_capture(app, "ffmpeg", vec!["-hide_banner".into(),"-y".into(),"-ss".into(),"1".into(),"-i".into(),source.to_string_lossy().into_owned(),"-frames:v".into(),"1".into(),out.to_string_lossy().into_owned()]).await?;
+            outputs.push(out);
+        }
+        "split" => {
+            let probe = sidecar_capture(app, "ffprobe", vec!["-v".into(),"error".into(),"-show_entries".into(),"format=duration".into(),"-of".into(),"default=noprint_wrappers=1:nokey=1".into(),source.to_string_lossy().into_owned()]).await?;
+            let duration: f64 = probe.0.parse().map_err(|_| "Video süresi okunamadı".to_string())?;
+            if duration < 2.0 { return Err("Videoyu ikiye bölmek için video en az 2 saniye olmalı".into()); }
+            let middle = duration / 2.0;
+            for (index, args) in [
+                vec!["-ss".into(),"0".into(),"-t".into(),format!("{middle:.3}")],
+                vec!["-ss".into(),format!("{middle:.3}")],
+            ].into_iter().enumerate() {
+                let out = safe_output(&source, if index == 0 { "part-1" } else { "part-2" }, &ext)?;
+                let mut command = vec!["-hide_banner".into(),"-y".into(),"-i".into(),source.to_string_lossy().into_owned()];
+                command.extend(args); command.extend(["-c".into(),"copy".into(),out.to_string_lossy().into_owned()]);
+                sidecar_capture(app, "ffmpeg", command).await?;
+                outputs.push(out);
+            }
+        }
+        "trim" => {
+            let out = safe_output(&source, "first-30s", "mp4")?;
+            sidecar_capture(app, "ffmpeg", vec!["-hide_banner".into(),"-y".into(),"-i".into(),source.to_string_lossy().into_owned(),"-t".into(),"30".into(),"-c:v".into(),"libx264".into(),"-crf".into(),"23".into(),"-c:a".into(),"aac".into(),out.to_string_lossy().into_owned()]).await?;
+            outputs.push(out);
+        }
+        "blur" => {
+            let out = safe_output(&source, "blurred", "mp4")?;
+            sidecar_capture(app, "ffmpeg", vec!["-hide_banner".into(),"-y".into(),"-i".into(),source.to_string_lossy().into_owned(),"-vf".into(),"boxblur=10:1".into(),"-c:v".into(),"libx264".into(),"-crf".into(),"23".into(),"-c:a".into(),"aac".into(),out.to_string_lossy().into_owned()]).await?;
+            outputs.push(out);
+        }
+        _ => return Err("Video çarkı işlemi tanınmıyor".into()),
+    }
+    Ok(outputs.into_iter().map(|path| JobResult { output: path.to_string_lossy().into_owned(), message: "Video çarkı işlemi tamamlandı".into(), content: None }).collect())
 }
 
 fn safe_output(input: &Path, suffix: &str, ext: &str) -> Result<PathBuf, String> {

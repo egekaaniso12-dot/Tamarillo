@@ -5,7 +5,27 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 
 type Mode = 'convert' | 'tools' | 'file';
 type Keys = { shift: boolean; control: boolean; alt: boolean };
-type Item = { page: string; title: string; detail: string };
+type Item = { page: string; title: string; detail: string; action?: string };
+const videoItems: Item[] = [
+  { page: 'media', title: 'Videoyu sıkıştır', detail: 'MP4 · daha küçük', action: 'compress' },
+  { page: 'media', title: 'Metadata kaldır', detail: 'Dosya bilgilerini sil', action: 'metadata' },
+  { page: 'media', title: 'Sesi kaldır', detail: 'Sessiz MP4 oluştur', action: 'mute' },
+  { page: 'media', title: 'Videoyu kırp', detail: '16:9 merkez kırpma', action: 'crop' },
+  { page: 'media', title: 'Hızı değiştir', detail: '1,25× hız', action: 'speed' },
+  { page: 'media', title: 'Videodan kare al', detail: '1. saniyede PNG', action: 'screenshot' },
+  { page: 'media', title: 'Videoyu böl', detail: 'İki eşit parçaya ayır', action: 'split' },
+  { page: 'media', title: 'Videoyu bulanıklaştır', detail: 'Tüm görüntüye blur', action: 'blur' },
+  { page: 'media', title: 'İlk 30 saniyeyi al', detail: 'Hızlı video kesimi', action: 'trim' },
+];
+const layoutItems: Item[] = [
+  { page: 'home', title: 'Sol üçte bir', detail: 'Pencereyi sol bölüme al', action: 'layout:left-third' },
+  { page: 'home', title: 'Orta üçte bir', detail: 'Pencereyi orta bölüme al', action: 'layout:middle-third' },
+  { page: 'home', title: 'Sağ üçte bir', detail: 'Pencereyi sağ bölüme al', action: 'layout:right-third' },
+  { page: 'home', title: 'Sol yarı', detail: 'Ekranın sol yarısı', action: 'layout:left-half' },
+  { page: 'home', title: 'Sağ yarı', detail: 'Ekranın sağ yarısı', action: 'layout:right-half' },
+  { page: 'home', title: 'Sol üçte iki', detail: 'Ekranın sol ⅔ bölümü', action: 'layout:left-two-thirds' },
+  { page: 'home', title: 'Sağ üçte iki', detail: 'Ekranın sağ ⅔ bölümü', action: 'layout:right-two-thirds' },
+];
 const items: Record<Mode, Item[]> = {
   convert: [
     { page: 'media', title: 'Medya dönüştür', detail: 'Video ve ses' },
@@ -39,6 +59,7 @@ export default function DragOverlay() {
   const [hover, setHover] = useState(-1);
   const receivedFiles = useRef(false);
   const pathsRef = useRef<string[]>([]);
+  const pathsAreVideo = (values: string[]) => values.length > 0 && values.every(path => /\.(mp4|mkv|mov|webm|avi|m4v)$/i.test(path));
 
   useEffect(() => {
     document.documentElement.style.background = 'transparent';
@@ -74,7 +95,8 @@ export default function DragOverlay() {
           return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
         });
         const page = target?.dataset.page ?? null;
-        if (dropped.length) void invoke('complete_desktop_drop', { paths: dropped, page });
+        const action = target?.dataset.action ?? null;
+        if (dropped.length) void invoke('complete_desktop_drop', { paths: dropped, page: action?.startsWith('layout:') ? 'home' : action ? 'media' : page, action });
         setActive(false);
         setMode(null);
         setPaths([]);
@@ -107,8 +129,8 @@ export default function DragOverlay() {
     return () => window.clearInterval(id);
   }, [active]);
 
-  const currentItems = mode ? items[mode] : [];
-  const modeName = mode === 'convert' ? 'DÖNÜŞTÜR' : mode === 'tools' ? 'ARAÇLAR' : 'DOSYA';
+  const currentItems = mode ? mode === 'tools' && pathsAreVideo(paths) ? videoItems : mode === 'file' ? layoutItems : items[mode] : [];
+  const modeName = mode === 'convert' ? 'DÖNÜŞTÜR' : mode === 'tools' ? pathsAreVideo(paths) ? 'VİDEO ARAÇLARI' : 'ARAÇLAR' : 'PENCERE YERLEŞİMİ';
   return <main className="drag-overlay-root" aria-label="Tamarillo masaüstü sürükleme çarkı">
     {active && mode && paths.length > 0 && <section className="global-drag-wheel" style={{ left: anchor.x, top: anchor.y }}>
       <header><b>{modeName}</b><span>{paths.length} dosya · bırakmak için bir dilimin üstüne sürükle</span></header>
@@ -116,7 +138,7 @@ export default function DragOverlay() {
         <div className="wheel-core"><span>t</span><small>TAMARILLO</small></div>
         {currentItems.map((item, index) => {
           const angle = (360 * index / Math.max(currentItems.length, 1)) - 90;
-          return <div key={item.page} data-page={item.page} className={hover === index ? 'global-petal hovered' : 'global-petal'} style={{ '--angle': `${angle}deg`, '--reverse-angle': `${-angle}deg` } as CSSProperties}>
+          return <div key={item.action ?? item.page} data-page={item.page} data-action={item.action} className={hover === index ? 'global-petal hovered' : 'global-petal'} style={{ '--angle': `${angle}deg`, '--reverse-angle': `${-angle}deg` } as CSSProperties}>
             <b>{item.title}</b><small>{item.detail}</small>
           </div>;
         })}
