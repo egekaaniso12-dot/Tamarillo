@@ -65,8 +65,8 @@ jobs:
           $installer = Get-ChildItem 'src-tauri/target/release/bundle/nsis' -Filter '*setup.exe' | Select-Object -First 1
           if (-not $installer) { throw 'NSIS kurulum dosyası bulunamadı' }
           $installDir = Join-Path $env:RUNNER_TEMP 'TamarilloSmoke'
-          & $installer.FullName /S /CURRENTUSER "/D=$installDir"
-          if ($LASTEXITCODE -ne 0) { throw "Tamarillo kurulumu başarısız: $LASTEXITCODE" }
+          $installerProcess = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', '/CURRENTUSER', "/D=$installDir") -Wait -PassThru
+          if ($installerProcess.ExitCode -ne 0) { throw "Tamarillo kurulumu başarısız: $($installerProcess.ExitCode)" }
           if (-not (Test-Path (Join-Path $installDir 'tamarillo.exe'))) {
             $installed = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Tamarillo' -ErrorAction SilentlyContinue
             if ($installed.InstallLocation) { $installDir = $installed.InstallLocation.Trim('"') }
