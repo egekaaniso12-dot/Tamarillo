@@ -7,15 +7,37 @@ use sha1::{Digest, Sha1};
 use tokio::io::AsyncWriteExt;
 use std::io::Read;
 
+#[cfg(windows)]
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetAsyncKeyState(vkey: i32) -> i16;
+}
+
 const COPYRIGHT: &str = "Copyright EgeHS Medya 2026 - 2027";
 
 #[derive(Serialize)]
 struct AppInfo { name: &'static str, copyright: &'static str }
 #[derive(Serialize)]
+struct DropModifiers { shift: bool, control: bool, alt: bool }
+#[derive(Serialize)]
 struct JobResult { output: String, message: String, #[serde(skip_serializing_if = "Option::is_none")] content: Option<String> }
 
 #[tauri::command]
 fn app_info() -> AppInfo { AppInfo { name: "Tamarillo", copyright: COPYRIGHT } }
+
+#[tauri::command]
+fn drop_modifiers() -> DropModifiers {
+    #[cfg(windows)]
+    unsafe {
+        return DropModifiers {
+            shift: GetAsyncKeyState(0x10) < 0,
+            control: GetAsyncKeyState(0x11) < 0,
+            alt: GetAsyncKeyState(0x12) < 0,
+        };
+    }
+    #[cfg(not(windows))]
+    DropModifiers { shift: false, control: false, alt: false }
+}
 
 fn safe_output(input: &Path, suffix: &str, ext: &str) -> Result<PathBuf, String> {
     let stem = input.file_stem().and_then(|s| s.to_str()).ok_or("Dosya adı okunamadı")?;
@@ -40,6 +62,12 @@ fn valid_web_url(value: &str) -> bool {
     (value.starts_with("https://") || value.starts_with("http://")) && !value.chars().any(char::is_control)
 }
 
+fn bundled_ffmpeg_path() -> Result<String, String> {
+    let executable = std::env::current_exe().map_err(|e| format!("Uygulama yolu okunamadı: {e}"))?;
+    let directory = executable.parent().ok_or("Uygulama klasörü bulunamadı")?;
+    Ok(directory.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }).to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 async fn convert_media(app: AppHandle, input: String, mode: String, quality: Option<u8>) -> Result<JobResult, String> {
     let source = PathBuf::from(&input).canonicalize().map_err(|_| "Kaynak dosya bulunamadı veya okunamıyor".to_string())?;
@@ -60,7 +88,7 @@ async fn convert_media(app: AppHandle, input: String, mode: String, quality: Opt
     let mut command_args = vec!["-hide_banner".into(), "-y".into(), "-i".into(), source.to_string_lossy().into_owned()];
     command_args.extend(args); command_args.push(output.to_string_lossy().into_owned());
     app.emit("job-progress", serde_json::json!({"phase":"running","message":"Medya dönüştürülüyor"})).ok();
-    sidecar_capture(&app, "binaries/ffmpeg", command_args).await?;
+    sidecar_capture(&app, "ffmpeg", command_args).await?;
     Ok(JobResult { output: output.to_string_lossy().into_owned(), message: "İşlem tamamlandı".into(), content: None })
 }
 
@@ -76,8 +104,8 @@ async fn trim_video_silence(app: AppHandle, input: String, threshold: Option<i16
     let out = safe_output(&source, "silence-trimmed", "mp4")?;
     let limit = threshold.unwrap_or(-38).clamp(-65, -15).to_string();
     let duration = min_silence.unwrap_or(0.45).clamp(0.15, 3.0).to_string();
-    let (_, diagnostic) = sidecar_capture(&app, "binaries/ffmpeg", vec!["-hide_banner".into(), "-i".into(), source.to_string_lossy().into_owned(), "-af".into(), format!("silencedetect=noise={limit}dB:d={duration}"), "-f".into(), "null".into(), "-".into()]).await?;
-    let probe = sidecar_capture(&app, "binaries/ffprobe", vec!["-v".into(), "error".into(), "-show_entries".into(), "format=duration".into(), "-of".into(), "default=noprint_wrappers=1:nokey=1".into(), source.to_string_lossy().into_owned()]).await?;
+    let (_, diagnostic) = sidecar_capture(&app, "ffmpeg", vec!["-hide_banner".into(), "-i".into(), source.to_string_lossy().into_owned(), "-af".into(), format!("silencedetect=noise={limit}dB:d={duration}"), "-f".into(), "null".into(), "-".into()]).await?;
+    let probe = sidecar_capture(&app, "ffprobe", vec!["-v".into(), "error".into(), "-show_entries".into(), "format=duration".into(), "-of".into(), "default=noprint_wrappers=1:nokey=1".into(), source.to_string_lossy().into_owned()]).await?;
     let total: f64 = probe.0.trim().parse().map_err(|_| "Videonun süresi okunamadı".to_string())?;
     let mut silences: Vec<(f64, f64)> = Vec::new(); let mut pending: Option<f64> = None;
     for line in diagnostic.lines() {
@@ -97,7 +125,7 @@ async fn trim_video_silence(app: AppHandle, input: String, threshold: Option<i16
     }
     let concat = ranges.iter().enumerate().map(|(i,_)| format!("[v{i}][a{i}]")).collect::<String>();
     filters.push(format!("{concat}concat=n={}:v=1:a=1[v][a]", ranges.len()));
-    sidecar_capture(&app, "binaries/ffmpeg", vec!["-hide_banner".into(), "-y".into(), "-i".into(), source.to_string_lossy().into_owned(), "-filter_complex".into(), filters.join(";").replace(" ", ""), "-map".into(), "[v]".into(), "-map".into(), "[a]".into(), "-c:v".into(), "libx264".into(), "-crf".into(), "23".into(), "-c:a".into(), "aac".into(), out.to_string_lossy().into_owned()]).await?;
+    sidecar_capture(&app, "ffmpeg", vec!["-hide_banner".into(), "-y".into(), "-i".into(), source.to_string_lossy().into_owned(), "-filter_complex".into(), filters.join(";").replace(" ", ""), "-map".into(), "[v]".into(), "-map".into(), "[a]".into(), "-c:v".into(), "libx264".into(), "-crf".into(), "23".into(), "-c:a".into(), "aac".into(), out.to_string_lossy().into_owned()]).await?;
     Ok(JobResult { output: out.to_string_lossy().into_owned(), message: "Sessiz bölümler kesildi".into(), content: None })
 }
 
@@ -119,7 +147,7 @@ async fn process_images(app: AppHandle, inputs: Vec<String>, action: String, wid
         } else if action == "resize" { args.extend(["-vf".into(), format!("scale={w}:{h}:force_original_aspect_ratio=decrease")]); }
         if ext == "jpg" || ext == "jpeg" { args.extend(["-q:v".into(), ((100 - q.parse::<u8>().unwrap_or(85)) / 4 + 2).to_string()]); }
         args.push(output.to_string_lossy().into_owned());
-        sidecar_capture(&app, "binaries/ffmpeg", args).await?;
+        sidecar_capture(&app, "ffmpeg", args).await?;
         results.push(JobResult { output: output.to_string_lossy().into_owned(), message: "Görsel hazır".into(), content: None });
     }
     Ok(results)
@@ -159,12 +187,12 @@ async fn ensure_whisper_model(app: &AppHandle) -> Result<PathBuf, String> {
 
 async fn transcribe_source(app: &AppHandle, source: &Path, output: PathBuf) -> Result<JobResult, String> {
     let wav = safe_output(&source, "transcription-temp", "wav")?;
-    let audio = sidecar_capture(app, "binaries/ffmpeg", vec!["-hide_banner".into(), "-y".into(), "-i".into(), source.to_string_lossy().into_owned(), "-vn".into(), "-ac".into(), "1".into(), "-ar".into(), "16000".into(), "-c:a".into(), "pcm_s16le".into(), wav.to_string_lossy().into_owned()]).await;
+    let audio = sidecar_capture(app, "ffmpeg", vec!["-hide_banner".into(), "-y".into(), "-i".into(), source.to_string_lossy().into_owned(), "-vn".into(), "-ac".into(), "1".into(), "-ar".into(), "16000".into(), "-c:a".into(), "pcm_s16le".into(), wav.to_string_lossy().into_owned()]).await;
     if let Err(error) = audio { let _ = std::fs::remove_file(&wav); return Err(error); }
     let model = match ensure_whisper_model(app).await { Ok(path) => path, Err(error) => { let _ = std::fs::remove_file(&wav); return Err(error); } };
     app.emit("job-progress", serde_json::json!({"phase":"transcribing","message":"Konuşma metne çevriliyor"})).ok();
     let prefix = output.with_extension("");
-    let result = sidecar_capture(app, "binaries/whisper-cli", vec!["-m".into(), model.to_string_lossy().into_owned(), "-f".into(), wav.to_string_lossy().into_owned(), "-l".into(), "auto".into(), "-otxt".into(), "-of".into(), prefix.to_string_lossy().into_owned(), "-np".into()]).await;
+    let result = sidecar_capture(app, "whisper-cli", vec!["-m".into(), model.to_string_lossy().into_owned(), "-f".into(), wav.to_string_lossy().into_owned(), "-l".into(), "auto".into(), "-otxt".into(), "-of".into(), prefix.to_string_lossy().into_owned(), "-np".into()]).await;
     let _ = std::fs::remove_file(&wav);
     result?;
     let content = std::fs::read_to_string(&output).map_err(|e| format!("Transkript okunamadı: {e}"))?;
@@ -187,7 +215,7 @@ async fn transcribe_url(app: AppHandle, url: String) -> Result<JobResult, String
     std::fs::create_dir_all(&temp).map_err(|e| format!("Geçici klasör açılamadı: {e}"))?;
     let template = temp.join("source.%(ext)s");
     let args = vec!["--no-playlist".into(), "-f".into(), "bestaudio/best".into(), "-o".into(), template.to_string_lossy().into_owned(), trimmed.into()];
-    if let Err(error) = sidecar_capture(&app, "binaries/yt-dlp", args).await { let _ = std::fs::remove_dir_all(&temp); return Err(error); }
+    if let Err(error) = sidecar_capture(&app, "yt-dlp", args).await { let _ = std::fs::remove_dir_all(&temp); return Err(error); }
     let source = std::fs::read_dir(&temp).ok().into_iter().flatten().filter_map(Result::ok).map(|entry| entry.path()).find(|path| path.is_file() && !path.to_string_lossy().ends_with(".part"));
     let Some(source) = source else { let _ = std::fs::remove_dir_all(&temp); return Err("Bağlantıdan ses akışı alınamadı".into()); };
     let folder = app.path().download_dir().map_err(|e| format!("İndirme klasörü bulunamadı: {e}"))?;
@@ -205,12 +233,12 @@ async fn download_video(app: AppHandle, url: String, format: Option<String>) -> 
     let folder = app.path().download_dir().map_err(|e| format!("İndirme klasörü bulunamadı: {e}"))?;
     std::fs::create_dir_all(&folder).map_err(|e| format!("İndirme klasörü açılamadı: {e}"))?;
     let template = folder.join("%(title).180B [%(id)s].%(ext)s");
-    let mut args = vec!["--no-playlist".into(), "--newline".into(), "-o".into(), template.to_string_lossy().into_owned()];
+    let mut args = vec!["--no-playlist".into(), "--newline".into(), "--ffmpeg-location".into(), bundled_ffmpeg_path()?, "-o".into(), template.to_string_lossy().into_owned()];
     if format.as_deref() == Some("mp3") { args.extend(["-x".into(), "--audio-format".into(), "mp3".into(), "--audio-quality".into(), "0".into()]); }
     else { args.extend(["-f".into(), "bestvideo*+bestaudio/best".into(), "--merge-output-format".into(), "mp4".into()]); }
     args.push(trimmed.into());
     app.emit("job-progress", serde_json::json!({"phase":"running","message":"Video indiriliyor"})).ok();
-    let (output, _) = sidecar_capture(&app, "binaries/yt-dlp", args).await?;
+    let (output, _) = sidecar_capture(&app, "yt-dlp", args).await?;
     Ok(JobResult { output: folder.to_string_lossy().into_owned(), message: output.lines().last().unwrap_or("İndirme tamamlandı").to_string(), content: None })
 }
 
@@ -221,7 +249,7 @@ async fn download_captions(app: AppHandle, url: String, language: Option<String>
     let template = folder.join("%(title).180B [%(id)s].%(ext)s");
     let lang = language.unwrap_or_else(|| "tr,en".into());
     let args = vec!["--no-playlist".into(), "--skip-download".into(), "--write-subs".into(), "--write-auto-subs".into(), "--sub-langs".into(), lang, "--sub-format".into(), "vtt".into(), "-o".into(), template.to_string_lossy().into_owned(), trimmed.into()];
-    let (output, _) = sidecar_capture(&app, "binaries/yt-dlp", args).await?;
+    let (output, _) = sidecar_capture(&app, "yt-dlp", args).await?;
     let newest = std::fs::read_dir(&folder).ok().into_iter().flatten().filter_map(Result::ok).map(|entry| entry.path())
         .filter(|path| path.extension().and_then(|e|e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("vtt")))
         .max_by_key(|path| std::fs::metadata(path).and_then(|m|m.modified()).unwrap_or(UNIX_EPOCH));
@@ -232,7 +260,7 @@ async fn download_captions(app: AppHandle, url: String, language: Option<String>
 #[tauri::command]
 async fn probe_media(app: AppHandle, input: String) -> Result<String, String> {
     let source = PathBuf::from(input).canonicalize().map_err(|_| "Dosya bulunamadı".to_string())?;
-    let (result, _) = sidecar_capture(&app, "binaries/ffprobe", vec!["-v".into(), "error".into(), "-show_entries".into(), "format=duration:stream=codec_name,width,height,codec_type".into(), "-of".into(), "default=noprint_wrappers=1".into(), source.to_string_lossy().into_owned()]).await?;
+    let (result, _) = sidecar_capture(&app, "ffprobe", vec!["-v".into(), "error".into(), "-show_entries".into(), "format=duration:stream=codec_name,width,height,codec_type".into(), "-of".into(), "default=noprint_wrappers=1".into(), source.to_string_lossy().into_owned()]).await?;
     Ok(result)
 }
 
@@ -253,6 +281,6 @@ pub fn run() {
             app.global_shortcut().register(quick_download)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![app_info, convert_media, trim_video_silence, process_images, transcribe_media, transcribe_url, download_video, download_captions, probe_media])
+        .invoke_handler(tauri::generate_handler![app_info, drop_modifiers, convert_media, trim_video_silence, process_images, transcribe_media, transcribe_url, download_video, download_captions, probe_media])
         .run(tauri::generate_context!()).expect("Tamarillo başlatılamadı");
 }

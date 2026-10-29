@@ -32,9 +32,14 @@ jobs:
           Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegExtract -Force
           $ffmpegExe = Get-ChildItem $ffmpegExtract -Filter ffmpeg.exe -Recurse | Select-Object -First 1
           $ffprobeExe = Get-ChildItem $ffmpegExtract -Filter ffprobe.exe -Recurse | Select-Object -First 1
+          if (-not $ffmpegExe -or -not $ffprobeExe) { throw 'FFmpeg veya ffprobe bulunamadı' }
           Copy-Item $ffmpegExe.FullName (Join-Path $bin 'ffmpeg-x86_64-pc-windows-msvc.exe')
           Copy-Item $ffprobeExe.FullName (Join-Path $bin 'ffprobe-x86_64-pc-windows-msvc.exe')
-          Invoke-WebRequest 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile (Join-Path $bin 'yt-dlp-x86_64-pc-windows-msvc.exe')
+          $dllDir = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/resources/binaries'
+          New-Item -ItemType Directory -Force -Path $dllDir | Out-Null
+          Get-ChildItem $ffmpegExe.DirectoryName -Filter *.dll | Copy-Item -Destination $dllDir -Force
+          $ytDlpExe = Join-Path $bin 'yt-dlp-x86_64-pc-windows-msvc.exe'
+          Invoke-WebRequest 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile $ytDlpExe
           $whisperZip = Join-Path $env:RUNNER_TEMP 'whisper.zip'
           Invoke-WebRequest 'https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip' -OutFile $whisperZip
           $whisperExtract = Join-Path $env:RUNNER_TEMP 'whisper'
@@ -42,9 +47,15 @@ jobs:
           $whisperExe = Get-ChildItem $whisperExtract -Filter whisper-cli.exe -Recurse | Select-Object -First 1
           if (-not $whisperExe) { throw 'whisper-cli.exe bulunamadı' }
           Copy-Item $whisperExe.FullName (Join-Path $bin 'whisper-cli-x86_64-pc-windows-msvc.exe')
-          $dllDir = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/resources/binaries'
-          New-Item -ItemType Directory -Force -Path $dllDir | Out-Null
           Get-ChildItem $whisperExtract -Filter *.dll -Recurse | Copy-Item -Destination $dllDir -Force
+          & $ffmpegExe.FullName -version | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg başlatılamadı' }
+          & $ffprobeExe.FullName -version | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'ffprobe başlatılamadı' }
+          & $ytDlpExe --version
+          if ($LASTEXITCODE -ne 0) { throw 'yt-dlp başlatılamadı' }
+          & $whisperExe.FullName --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'whisper-cli başlatılamadı' }
           Get-ChildItem $bin,$dllDir -File | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize
       - run: npm ci
       - run: npm run tauri:build

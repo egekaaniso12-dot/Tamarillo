@@ -50,7 +50,7 @@
       "binaries/whisper-cli"
     ],
     "resources": {
-      "resources/binaries/*.dll": "binaries/"
+      "resources/binaries/*.dll": "."
     },
     "icon": [
       "icons/icon.png",
