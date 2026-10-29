@@ -2,6 +2,10 @@
 
 İçerik üreticileri için Windows masaüstü araç seti. `Copyright EgeHS Medya 2026 - 2027`
 
+## Windows için indir
+
+[**Tamarillo kurulum dosyasını indir (.exe)**](https://github.com/egekaaniso12-dot/Tamarillo/releases/latest)
+
 ## Çalışan araçlar
 
 - **Medya:** MP4 sıkıştırma ve dönüştürme, MOV/WebM çıktı, MP3/WAV ses ayırma, videodaki sessiz aralıkları analiz edip kesme.
