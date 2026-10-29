@@ -1,6 +1,6 @@
 use std::{path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use sha1::{Digest, Sha1};
@@ -11,9 +11,19 @@ use std::io::Read;
 #[link(name = "user32")]
 unsafe extern "system" {
     fn GetAsyncKeyState(vkey: i32) -> i16;
+    fn GetCursorPos(point: *mut WinPoint) -> i32;
+    fn GetSystemMetrics(index: i32) -> i32;
 }
 
 const COPYRIGHT: &str = "Copyright EgeHS Medya 2026 - 2027";
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct WinPoint { x: i32, y: i32 }
+
+#[cfg(windows)]
+static DESKTOP_DRAG_OVERLAY_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Serialize)]
 struct AppInfo { name: &'static str, copyright: &'static str }
@@ -37,6 +47,70 @@ fn drop_modifiers() -> DropModifiers {
     }
     #[cfg(not(windows))]
     DropModifiers { shift: false, control: false, alt: false }
+}
+
+#[cfg(windows)]
+fn set_drag_overlay(app: &AppHandle, visible: bool) {
+    if let Some(window) = app.get_webview_window("drag-overlay") {
+        if visible {
+            unsafe {
+                let x = GetSystemMetrics(76); // SM_XVIRTUALSCREEN
+                let y = GetSystemMetrics(77); // SM_YVIRTUALSCREEN
+                let width = GetSystemMetrics(78); // SM_CXVIRTUALSCREEN
+                let height = GetSystemMetrics(79); // SM_CYVIRTUALSCREEN
+                let _ = window.set_position(PhysicalPosition::new(x, y));
+                let _ = window.set_size(PhysicalSize::new(width.max(1) as u32, height.max(1) as u32));
+            }
+            let _ = window.show();
+        } else { let _ = window.hide(); }
+    }
+}
+
+#[cfg(windows)]
+fn start_desktop_drag_monitor(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut origin: Option<WinPoint> = None;
+        loop {
+            let mut point = WinPoint::default();
+            let cursor_ok = unsafe { GetCursorPos(&mut point) } != 0;
+            let left_down = unsafe { GetAsyncKeyState(0x01) } < 0;
+            let modifier_down = unsafe { GetAsyncKeyState(0x10) | GetAsyncKeyState(0x11) | GetAsyncKeyState(0x12) } < 0;
+            if left_down && cursor_ok {
+                let start = *origin.get_or_insert(point);
+                let moved = (point.x - start.x).abs() + (point.y - start.y).abs() > 8;
+                if moved && modifier_down && !DESKTOP_DRAG_OVERLAY_ACTIVE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    set_drag_overlay(&app, true);
+                    let _ = app.emit("desktop-drag-session", "start");
+                } else if !modifier_down && DESKTOP_DRAG_OVERLAY_ACTIVE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    set_drag_overlay(&app, false);
+                    let _ = app.emit("desktop-drag-session", "cancel");
+                }
+            } else {
+                origin = None;
+                if DESKTOP_DRAG_OVERLAY_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
+                    // Let OLE deliver Drop before the topmost overlay is hidden.
+                    std::thread::sleep(std::time::Duration::from_millis(180));
+                    if DESKTOP_DRAG_OVERLAY_ACTIVE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        set_drag_overlay(&app, false);
+                        let _ = app.emit("desktop-drag-session", "end");
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+    });
+}
+
+#[tauri::command]
+fn complete_desktop_drop(app: AppHandle, paths: Vec<String>, page: Option<String>) -> Result<(), String> {
+    if paths.is_empty() { return Err("Sürüklenen dosya alınamadı".into()); }
+    #[cfg(windows)] DESKTOP_DRAG_OVERLAY_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+    #[cfg(windows)] set_drag_overlay(&app, false);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    app.emit("desktop-file-dropped", serde_json::json!({"paths": paths, "page": page})).map_err(|e| e.to_string())
 }
 
 fn safe_output(input: &Path, suffix: &str, ext: &str) -> Result<PathBuf, String> {
@@ -279,8 +353,16 @@ pub fn run() {
                 }
             }).build())?;
             app.global_shortcut().register(quick_download)?;
+            #[cfg(windows)] {
+                WebviewWindowBuilder::new(app, "drag-overlay", WebviewUrl::App("index.html".into()))
+                    .title("Tamarillo drag wheel")
+                    .decorations(false).transparent(true).always_on_top(true)
+                    .skip_taskbar(true).focusable(false).shadow(false).resizable(false)
+                    .inner_size(1.0, 1.0).visible(false).build()?;
+                start_desktop_drag_monitor(app.handle().clone());
+            }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![app_info, drop_modifiers, convert_media, trim_video_silence, process_images, transcribe_media, transcribe_url, download_video, download_captions, probe_media])
+        .invoke_handler(tauri::generate_handler![app_info, drop_modifiers, complete_desktop_drop, convert_media, trim_video_silence, process_images, transcribe_media, transcribe_url, download_video, download_captions, probe_media])
         .run(tauri::generate_context!()).expect("Tamarillo başlatılamadı");
 }

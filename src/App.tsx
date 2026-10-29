@@ -187,6 +187,15 @@ export default function App() {
     return () => { unlisten?.(); };
   }, []);
   useEffect(() => {
+    let unlisten: (()=>void)|undefined;
+    listen<{paths:string[];page:string|null}>('desktop-file-dropped', event => {
+      setFiles(event.payload.paths); setOutputs([]); setMessage(`${event.payload.paths.length} dosya hazır`);
+      const target = nav.find(item => item.id === event.payload.page);
+      setPage(target?.id ?? 'home'); setMenu(null);
+    }).then(fn => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, []);
+  useEffect(() => {
     const key = (event: KeyboardEvent) => {
       heldModifiers.current = { shift: event.shiftKey, control: event.ctrlKey, alt: event.altKey };
       const target = event.target as HTMLElement | null; const typing = target && (['INPUT','TEXTAREA','SELECT'].includes(target.tagName) || target.isContentEditable);
@@ -238,7 +247,7 @@ export default function App() {
 
       {page==='library'&&<><PageIntro eyebrow="BU CİHAZDA" title="Son işlemler" detail="Son çıktılarının klasör yolları bu bilgisayarda saklanır."/>{library.length===0?<div className="empty-state">Henüz tamamlanan bir işlem yok.</div>:<div className="panel history-list">{library.map((path,i)=><div className="history-item" key={`${path}-${i}`}><FileVideo size={17}/><span>{path}</span><button className="icon-button" onClick={()=>void navigator.clipboard.writeText(path)}>Yolu kopyala</button></div>)}</div>}</>}
 
-      {page==='settings'&&<><PageIntro eyebrow="TERCİHLER" title="Ayarlar" detail="Tamarillo’nun Windows kısayolları ve çalışma şekli."/><div className="panel"><h2>Windows kısayolları</h2><ShortcutTable/><div className="split-row"><div><h3>Genel kısayol</h3><p className="muted">Uygulama arka plandayken panodaki bağlantıyı Tamarillo’ya getirir.</p></div><kbd>Ctrl + Shift + D</kbd></div><p className="muted small">Dosyaları Windows Gezgini’nden uygulamaya sürüklerken Shift dönüştürme çarkını, Alt araç çarkını, Ctrl dosya işlemleri çarkını açar. Dosyayı çarktaki seçeneğin üzerine bırak.</p><div className="setting-row"><span>Görünüm</span><span className="pill">Koyu tema</span></div><div className="setting-row"><span>Uygulama</span><b>{info.name}</b></div><div className="setting-row"><span>Telif</span><b>{info.copyright}</b></div></div></>}
+      {page==='settings'&&<><PageIntro eyebrow="TERCİHLER" title="Ayarlar" detail="Tamarillo’nun Windows kısayolları ve çalışma şekli."/><div className="panel"><h2>Windows kısayolları</h2><ShortcutTable/><div className="split-row"><div><h3>Genel kısayol</h3><p className="muted">Uygulama arka plandayken panodaki bağlantıyı Tamarillo’ya getirir.</p></div><kbd>Ctrl + Shift + D</kbd></div><p className="muted small">Explorer’da dosyayı tutup masaüstünde sürüklerken Shift dönüştürme, Alt araç, Ctrl dosya işlemleri çarkını açar. Çarktaki seçeneğin üzerine bırak.</p><div className="setting-row"><span>Görünüm</span><span className="pill">Koyu tema</span></div><div className="setting-row"><span>Uygulama</span><b>{info.name}</b></div><div className="setting-row"><span>Telif</span><b>{info.copyright}</b></div></div></>}
 
       <footer>{info.copyright}<span>•</span> Windows masaüstü sürümü</footer>
     </main>

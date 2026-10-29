@@ -3,7 +3,8 @@
   "identifier": "default",
   "description": "Tamarillo ana pencere yetkileri",
   "windows": [
-    "main"
+    "main",
+    "drag-overlay"
   ],
   "permissions": [
     "core:default",
